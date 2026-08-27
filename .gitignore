@@ -1,0 +1,18 @@
+# 撮影物・実験データは一切含めない（被写体に個人が写るため）
+*.png
+*.jpg
+*.jpeg
+*.bin
+*.raw
+
+# ビルド生成物
+*.ko
+*.ko.zst
+*.o
+*.mod
+*.mod.c
+*.deb
+.*.cmd
+Module.symvers
+modules.order
+__pycache__/

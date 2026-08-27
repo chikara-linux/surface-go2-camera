@@ -1,0 +1,35 @@
+# Surface Go 2 (OV5693 フロントカメラ) 向け IPU3 チューニング
+#
+# libcamera 既定の uncalibrated.yaml をベースに、AGC の目標輝度だけを上げたもの。
+# 既定の relativeLuminanceTarget は 0.16 で、屋内では露出が上限に張り付いたまま
+# アナログゲインを 1.125 までしか使わず、かなり暗い絵になる。
+#
+# 0.40 が実用上の最適値（2026-08-27 に実機で判断）。
+#   0.30 … やや暗い
+#   0.40 … 適正
+#   0.50 以上 … 白飛びが出る
+#
+# 注意: 「0.30 より上げても効果が無い」という以前の記述は誤りだった。
+# あれは暗所で AE が上限（露出 33167us / ゲイン 7.94）に張り付いていた
+# 状態での測定で、飽和していたから差が出なかっただけ。通常光量下では
+# 目標値を上げれば素直に明るくなる。
+#
+# 色補正 (AWB/CCM) と周辺減光は改善しない。IPU3 の IPA にシェーディング補正
+# アルゴリズムが存在しないため、中央より周辺が暗くなるのは補正できない。
+#
+# 導入: sudo cp ov5693.yaml /usr/share/libcamera/ipa/ipu3/
+#       systemctl --user restart wireplumber
+# 撤去: sudo rm /usr/share/libcamera/ipa/ipu3/ov5693.yaml
+#       （uncalibrated.yaml へのフォールバックに戻るだけ）
+# 一時的な試行: LIBCAMERA_IPU3_TUNING_FILE=/path/to/ov5693.yaml cam -c2 --capture=60
+%YAML 1.1
+---
+version: 1
+algorithms:
+  - Af:
+  - Agc:
+      relativeLuminanceTarget: 0.40
+  - Awb:
+  - BlackLevelCorrection:
+  - ToneMapping:
+...

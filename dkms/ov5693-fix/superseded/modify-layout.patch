@@ -1,0 +1,18 @@
+--- a/drivers/media/i2c/ov5693.c
++++ b/drivers/media/i2c/ov5693.c
+@@ -1131,9 +1131,15 @@
+ 	ctrls->hflip = v4l2_ctrl_new_std(&ctrls->handler, ops,
+ 					 V4L2_CID_HFLIP, 0, 1, 1, 0);
+ 
++	if (ctrls->hflip)
++		ctrls->hflip->flags |= V4L2_CTRL_FLAG_MODIFY_LAYOUT;
++
+ 	ctrls->vflip = v4l2_ctrl_new_std(&ctrls->handler, ops,
+ 					 V4L2_CID_VFLIP, 0, 1, 1, 0);
+ 
++	if (ctrls->vflip)
++		ctrls->vflip->flags |= V4L2_CTRL_FLAG_MODIFY_LAYOUT;
++
+ 	hblank = OV5693_FIXED_PPL - ov5693->mode.format.width;
+ 	ctrls->hblank = v4l2_ctrl_new_std(&ctrls->handler, ops,
+ 					  V4L2_CID_HBLANK, hblank,

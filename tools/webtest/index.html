@@ -1,0 +1,99 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>カメラ確認</title>
+<style>
+ body{font-family:system-ui,sans-serif;margin:2rem;max-width:60rem;line-height:1.6}
+ video{width:100%;max-width:40rem;background:#111;border-radius:8px;display:block;margin:1rem 0}
+ button{font-size:1rem;padding:.5rem 1rem;margin:.25rem .5rem .25rem 0}
+ #devs button{background:#e8f0ff;border:1px solid #88a}
+ #log{white-space:pre-wrap;font-family:monospace;font-size:.85rem;background:#f4f4f4;
+      padding:1rem;border-radius:6px;max-height:22rem;overflow:auto}
+ .ok{color:#0a7;font-weight:bold}.ng{color:#c33;font-weight:bold}.warn{color:#c70}
+ .note{background:#fffbe6;border-left:4px solid #e0b000;padding:.75rem 1rem;margin:1rem 0}
+</style>
+<h1>カメラ確認（ローカル完結・外部通信なし）</h1>
+
+<div class="note">
+<b>緑一色になったら、それはリアカメラです。</b>
+全ゼロの映像を YUV→RGB 変換すると RGB(0,135,0) の緑になります。
+リア (OV8865) は既知の未解決問題で映像が出ません。<b>フロントを選んでください。</b>
+</div>
+
+<button id="init">1. カメラ許可を取得してデバイス一覧を出す</button>
+<div id="devs"></div>
+<button id="stop">停止</button>
+
+<video id="v" autoplay playsinline muted></video>
+<div id="log">「1.」を押してください。KDE の許可ダイアログが出ます。</div>
+
+<script>
+const logEl = document.getElementById('log');
+const log = (m, cls) => {
+  logEl.innerHTML += '\n' + (cls ? `<span class="${cls}">${m}</span>` : m);
+  logEl.scrollTop = logEl.scrollHeight;
+};
+let stream = null;
+
+const stop = () => {
+  if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+};
+document.getElementById('stop').onclick = () => { stop(); log('\n停止した。'); };
+
+document.getElementById('init').onclick = async () => {
+  try {
+    // ラベルを見るには一度 getUserMedia で許可を得る必要がある
+    const tmp = await navigator.mediaDevices.getUserMedia({video: true});
+    tmp.getTracks().forEach(t => t.stop());
+    const cams = (await navigator.mediaDevices.enumerateDevices())
+                   .filter(d => d.kind === 'videoinput');
+    log(`\n--- videoinput ${cams.length} 件 ---`, cams.length ? 'ok' : 'ng');
+    const box = document.getElementById('devs');
+    box.innerHTML = '';
+    cams.forEach((c, i) => {
+      const label = c.label || `(ラベル非公開) #${i}`;
+      log(`  [${i}] ${label}`);
+      const b = document.createElement('button');
+      b.textContent = `▶ ${label}`;
+      b.onclick = () => start(c.deviceId, label);
+      box.appendChild(b);
+    });
+    log('\n上のボタンでカメラを明示的に選んでください。');
+  } catch (e) { log('失敗: ' + e.name + ' — ' + e.message, 'ng'); }
+};
+
+const start = async (deviceId, label) => {
+  stop();
+  try {
+    log(`\n「${label}」を開始…`);
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: {deviceId: {exact: deviceId}}
+    });
+    const v = document.getElementById('v');
+    v.srcObject = stream;
+    const t = stream.getVideoTracks()[0];
+    log('取得: ' + t.label, 'ok');
+    setTimeout(() => {
+      const s = t.getSettings();
+      log(`解像度 ${s.width}x${s.height} @ ${s.frameRate ?? '?'}fps`);
+      const c = document.createElement('canvas');
+      c.width = 80; c.height = 60;
+      const cx = c.getContext('2d');
+      cx.drawImage(v, 0, 0, 80, 60);
+      const px = cx.getImageData(0, 0, 80, 60).data;
+      let rs = 0, gs = 0, bs = 0, n = 0, green = 0;
+      for (let i = 0; i < px.length; i += 4) {
+        rs += px[i]; gs += px[i+1]; bs += px[i+2]; n++;
+        if (px[i] < 30 && px[i+1] > 100 && px[i+1] < 170 && px[i+2] < 30) green++;
+      }
+      const avg = `平均RGB(${(rs/n)|0}, ${(gs/n)|0}, ${(bs/n)|0})`;
+      if (green / n > 0.9) {
+        log(`${avg} → ⚠ 緑一色。全ゼロの映像＝このカメラからは画が来ていない`, 'ng');
+      } else if (Math.max(rs, gs, bs) === 0) {
+        log(`${avg} → ⚠ 真っ黒`, 'ng');
+      } else {
+        log(`${avg} → ✅ 実際に映っている`, 'ok');
+      }
+    }, 2500);
+  } catch (e) { log(`失敗: ${e.name} — ${e.message}`, 'ng'); }
+};
+</script>

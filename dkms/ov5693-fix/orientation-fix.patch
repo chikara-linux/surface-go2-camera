@@ -1,0 +1,84 @@
+--- a/drivers/media/i2c/ov5693.c
++++ b/drivers/media/i2c/ov5693.c
+@@ -368,6 +368,44 @@
+ 	return 0;
+ }
+ 
++/*
++ * The camera module in the Surface Go 2 is mounted mirrored: with the
++ * sensor's horizontal flip disabled the image comes out left-right
++ * reversed. Invert the sense of the HFLIP control so that the corrected
++ * orientation is what applications get by default -- libcamera writes
++ * HFLIP=0 explicitly on every configure, so simply changing the control's
++ * default value would be overwritten.
++ *
++ * Flipping shifts the Bayer phase, so the reported media bus code has to
++ * follow the effective readout, otherwise the ISP demosaics with the wrong
++ * order and the image comes out magenta.
++ */
++static bool ov5693_hflip_active(struct ov5693_device *ov5693)
++{
++	/* Inverted: a control value of 0 enables the sensor-level flip. */
++	return !(ov5693->ctrls.hflip && ov5693->ctrls.hflip->val);
++}
++
++static bool ov5693_vflip_active(struct ov5693_device *ov5693)
++{
++	return ov5693->ctrls.vflip && ov5693->ctrls.vflip->val;
++}
++
++static u32 ov5693_mbus_code(struct ov5693_device *ov5693)
++{
++	bool h = ov5693_hflip_active(ov5693);
++	bool v = ov5693_vflip_active(ov5693);
++
++	if (h && v)
++		return MEDIA_BUS_FMT_SRGGB10_1X10;
++	if (h)
++		return MEDIA_BUS_FMT_SGBRG10_1X10;
++	if (v)
++		return MEDIA_BUS_FMT_SGRBG10_1X10;
++
++	return MEDIA_BUS_FMT_SBGGR10_1X10;
++}
++
+ static int ov5693_flip_horz_configure(struct ov5693_device *ov5693,
+ 				      bool enable)
+ {
+@@ -506,7 +544,8 @@
+ 		ret = ov5693_digital_gain_configure(ov5693, ctrl->val);
+ 		break;
+ 	case V4L2_CID_HFLIP:
+-		ret = ov5693_flip_horz_configure(ov5693, !!ctrl->val);
++		/* Inverted; see ov5693_hflip_active(). */
++		ret = ov5693_flip_horz_configure(ov5693, !ctrl->val);
+ 		break;
+ 	case V4L2_CID_VFLIP:
+ 		ret = ov5693_flip_vert_configure(ov5693, !!ctrl->val);
+@@ -843,7 +882,7 @@
+ 
+ 	fmt->width = crop->width / hratio;
+ 	fmt->height = crop->height / vratio;
+-	fmt->code = MEDIA_BUS_FMT_SBGGR10_1X10;
++	fmt->code = ov5693_mbus_code(ov5693);
+ 
+ 	format->format = *fmt;
+ 
+@@ -1031,7 +1070,7 @@
+ 	if (code->index > 0)
+ 		return -EINVAL;
+ 
+-	code->code = MEDIA_BUS_FMT_SBGGR10_1X10;
++	code->code = ov5693_mbus_code(to_ov5693_sensor(sd));
+ 	return 0;
+ }
+ 
+@@ -1042,7 +1081,7 @@
+ 	struct ov5693_device *ov5693 = to_ov5693_sensor(sd);
+ 	struct v4l2_rect *__crop;
+ 
+-	if (fse->index > 1 || fse->code != MEDIA_BUS_FMT_SBGGR10_1X10)
++	if (fse->index > 1 || fse->code != ov5693_mbus_code(ov5693))
+ 		return -EINVAL;
+ 
+ 	__crop = __ov5693_get_pad_crop(ov5693, state, fse->pad, fse->which);

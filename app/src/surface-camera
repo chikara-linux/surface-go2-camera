@@ -1,0 +1,718 @@
+#!/usr/bin/env python3
+"""surface-camera — Surface Go 2 (IPU3 / libcamera) 向けカメラアプリ
+
+PipeWire 経由だと 1280x720 で頭打ちになるため、libcamerasrc で libcamera を
+直接叩いて 2560x1920 を使う。詳しい経緯は docs/investigation.md を参照。
+"""
+import os
+import sys
+import threading
+import time
+
+import gi
+gi.require_version("Gtk", "4.0")
+gi.require_version("Gst", "1.0")
+gi.require_version("GdkPixbuf", "2.0")
+from gi.repository import Gtk, Gst, GLib, Gdk, Gio, GdkPixbuf  # noqa: E402
+
+APP_ID = "io.github.chikara_linux.SurfaceCamera"
+
+TUNING_DIR = "/usr/share/surface-camera/tuning"
+
+# IPU3 の IPA は ExposureValue / Brightness / Gamma を実装していないため、
+# libcamerasrc のそれらのプロパティは黙って無視される。明るさを変える唯一の
+# 手段は AGC の目標輝度で、これはチューニングファイルにしか書けない。
+# None はシステム既定（各センサーの ov5693.yaml / ov8865.yaml）。
+# プリセットを選ぶと LIBCAMERA_IPU3_TUNING_FILE が両カメラに効く。
+# 標準はシステムの ov5693.yaml / ov8865.yaml（2026-08-27 時点で target 0.40）。
+# 0.50 以上は白飛びが出るので、上げる側は「必要なとき用」の位置づけ。
+BRIGHTNESS = [
+    ("標準", None),
+    ("控えめ", "agc-0.30.yaml"),
+    ("明るい", "agc-0.50.yaml"),
+    ("最大", "agc-0.60.yaml"),
+]
+
+# フロント (OV5693)。
+RESOLUTIONS_FRONT = [(2560, 1920), (1920, 1440), (1280, 720)]
+
+# リア (OV8865)。1632x1224 以下を要求すると壊れたセンサーモードが選ばれて
+# 1フレーム目で停止するため、それを避ける大きさだけを並べる。
+# 3264x2448 は ImgU 側が受け付けない（Internal data stream error）。
+RESOLUTIONS_REAR = [(2560, 1920), (2048, 1536)]
+
+# 左右反転の補正が必要なカメラ。フロントは ov5693-fix の DKMS でドライバ側を
+# 直してあるので不要。リアは未対応なのでパイプラインで反転させる。
+# videoflip のコストは実測でゼロだった。
+MIRRORED = {"back"}
+
+CSS = b"""
+.shutter {
+  min-width: 76px; min-height: 76px;
+  border-radius: 999px;
+  background: #ffffff;
+  border: 5px solid rgba(0,0,0,0.35);
+}
+.shutter:hover { background: #f0f0f0; }
+.shutter:active { background: #d0d0d0; }
+.barbtn {
+  min-width: 56px; min-height: 56px;
+  border-radius: 999px;
+  background: rgba(0,0,0,0.55);
+  color: #ffffff;
+  font-size: 15px;
+}
+.barbtn:hover { background: rgba(0,0,0,0.75); }
+.bottombar { background: rgba(0,0,0,0.35); padding: 10px; }
+.topbar { background: rgba(0,0,0,0.35); padding: 8px; }
+.thumb {
+  min-width: 56px; min-height: 56px;
+  padding: 0; border-radius: 10px;
+  border: 2px solid rgba(255,255,255,0.75);
+  background: rgba(0,0,0,0.55);
+}
+.thumb:disabled { border-color: rgba(255,255,255,0.2); }
+.barbtn.scanning { background: #d94f3d; }
+.toast {
+  background: rgba(0,0,0,0.85); color: #fff;
+  border-radius: 12px; padding: 10px 18px; font-size: 15px;
+}
+.qrresult { font-size: 16px; }
+"""
+
+
+def find_cameras():
+    """libcamera のカメラを列挙する。PipeWire を経由しないので、
+    WirePlumber で隠してあるリアカメラもここでは見える。"""
+    factory = Gst.DeviceProviderFactory.find("libcameraprovider")
+    if factory is None:
+        return []
+    provider = factory.get()
+    provider.start()
+    cams = []
+    for dev in provider.get_devices():
+        cam_id = dev.get_display_name()
+        location = "unknown"
+        props = dev.get_properties()
+        if props:
+            text = props.to_string()
+            if "CameraLocationFront" in text:
+                location = "front"
+            elif "CameraLocationBack" in text:
+                location = "back"
+        cams.append({
+            "id": cam_id,
+            "location": location,
+            "label": {"front": "前面", "back": "背面"}.get(location, cam_id),
+            "resolutions": RESOLUTIONS_REAR if location == "back"
+                           else RESOLUTIONS_FRONT,
+            "flip": location in MIRRORED,
+        })
+    provider.stop()
+    # 背面を先頭にする（起動時の既定）。前面しか無ければそれが選ばれる。
+    cams.sort(key=lambda c: 0 if c["location"] == "back" else 1)
+    return cams
+
+
+class CameraWindow(Gtk.ApplicationWindow):
+    def __init__(self, app, cameras):
+        super().__init__(application=app, title="カメラ")
+        self.set_default_size(960, 720)
+        self.cameras = cameras
+        self.cam_index = 0
+        self.res_index = 0
+        self.bright_index = 0
+        self.session_shots = []
+        self.pipeline = None
+        self.src = None
+        self.vsink = None
+        self.busy = False
+        self.scanning = False
+        self._scan_id = None
+        self._scan_busy = False
+        self._build_id = None
+        self._toast_id = None
+
+        self.picture = Gtk.Picture()
+        self.picture.set_content_fit(Gtk.ContentFit.CONTAIN)
+
+        self.overlay = Gtk.Overlay()
+        self.overlay.set_child(self.picture)
+
+        # 上部バー: 解像度と露出補正
+        top = Gtk.CenterBox()
+        top.add_css_class("topbar")
+        top.set_valign(Gtk.Align.START)
+
+        self.res_btn = Gtk.Button(label=self._res_label())
+        self.res_btn.add_css_class("barbtn")
+        self.res_btn.set_tooltip_text("解像度を切り替える")
+        self.res_btn.connect("clicked", self.on_cycle_res)
+        tl = Gtk.Box(spacing=8); tl.set_valign(Gtk.Align.CENTER)
+        tl.append(self.res_btn)
+        top.set_start_widget(tl)
+
+        self.bright_btn = Gtk.Button(label=self._bright_label())
+        self.bright_btn.add_css_class("barbtn")
+        self.bright_btn.set_tooltip_text("明るさ（AGC の目標輝度）")
+        self.bright_btn.connect("clicked", self.on_cycle_bright)
+        tr = Gtk.Box(spacing=8); tr.set_valign(Gtk.Align.CENTER)
+        tr.append(self.bright_btn)
+        top.set_end_widget(tr)
+
+        if len(self.cameras) > 1:
+            self.cam_btn = Gtk.Button(label=self._cam()["label"])
+            self.cam_btn.add_css_class("barbtn")
+            self.cam_btn.set_tooltip_text("前面 / 背面 を切り替える")
+            self.cam_btn.connect("clicked", self.on_switch_camera)
+            top.set_center_widget(self.cam_btn)
+        else:
+            self.cam_btn = None
+
+        self.overlay.add_overlay(top)
+
+        # 下部バー: サムネイル / シャッター / QR
+        bar = Gtk.CenterBox()
+        bar.add_css_class("bottombar")
+        bar.set_valign(Gtk.Align.END)
+
+        self.thumb_btn = Gtk.Button()
+        self.thumb_btn.add_css_class("thumb")
+        self.thumb_btn.set_tooltip_text("撮影した写真を見る")
+        self.thumb_btn.set_sensitive(False)
+        self.thumb_btn.connect("clicked", lambda *_: self.open_gallery())
+        bl = Gtk.Box(spacing=8); bl.set_valign(Gtk.Align.CENTER)
+        bl.append(self.thumb_btn)
+        bar.set_start_widget(bl)
+
+        self.shutter = Gtk.Button()
+        self.shutter.add_css_class("shutter")
+        self.shutter.set_tooltip_text("撮影 (Space)")
+        self.shutter.connect("clicked", lambda *_: self.capture())
+        bar.set_center_widget(self.shutter)
+
+        self.qr_btn = Gtk.ToggleButton(label="QR")
+        self.qr_btn.add_css_class("barbtn")
+        self.qr_btn.set_tooltip_text("QR 読み取りモード")
+        self.qr_btn.connect("toggled", self.on_qr_toggled)
+        br = Gtk.Box(spacing=8); br.set_valign(Gtk.Align.CENTER)
+        br.append(self.qr_btn)
+        bar.set_end_widget(br)
+
+        self.overlay.add_overlay(bar)
+
+        self.toast = Gtk.Label(label="")
+        self.toast.add_css_class("toast")
+        self.toast.set_halign(Gtk.Align.CENTER)
+        self.toast.set_valign(Gtk.Align.START)
+        self.toast.set_margin_top(18)
+        self.toast.set_visible(False)
+        self.overlay.add_overlay(self.toast)
+
+        self.set_child(self.overlay)
+
+        keys = Gtk.EventControllerKey()
+        keys.connect("key-pressed", self.on_key)
+        self.add_controller(keys)
+
+        self.connect("close-request", self.on_close)
+        self.start_pipeline()
+
+    # ---------- パイプライン ----------
+
+    def _cam(self):
+        if not self.cameras:
+            return None
+        return self.cameras[self.cam_index % len(self.cameras)]
+
+    def _resolutions(self):
+        cam = self._cam()
+        return cam["resolutions"] if cam else RESOLUTIONS_FRONT
+
+    def _res_label(self):
+        w, h = self._resolutions()[self.res_index]
+        return "%.1fMP  %d×%d" % (w * h / 1e6, w, h)
+
+    def start_pipeline(self):
+        self.stop_pipeline()
+        # 保留中の再構築があれば取り消す。取り消さないとボタン連打で
+        # パイプラインが複数生まれ、互いにカメラを奪い合う。
+        if self._build_id:
+            GLib.source_remove(self._build_id)
+            self._build_id = None
+        # 前のパイプラインがカメラを手放すまで少し待ってから作り直す
+        self._build_id = GLib.timeout_add(250, self._build_pipeline)
+
+    def _build_pipeline(self):
+        self._build_id = None
+        cam = self._cam()
+        w, h = self._resolutions()[self.res_index]
+
+        # camera-name はバックスラッシュを含むため parse_launch の文字列には
+        # 埋め込まない。要素を作ってプロパティを直接設定する。
+        src = Gst.ElementFactory.make("libcamerasrc")
+        if src is None:
+            self.show_toast("libcamerasrc がありません", 8)
+            return False
+        if cam:
+            src.set_property("camera-name", cam["id"])
+        self.src = src
+
+        # tee で撮影用の枝を常設すると、そちらがバッファを握り続けて
+        # ソースのプールを圧迫し、5MP で 28.6fps → 19.2fps まで落ちる。
+        # 単一の枝にして、撮影は表示シンクの last-sample から取り出す。
+        # シンクが1枚保持するコストは実測でゼロだった。
+        flip = "videoflip method=horizontal-flip ! " if (cam and cam["flip"]) else ""
+        desc = (
+            "capsfilter name=cf ! %svideoconvert ! "
+            "gtk4paintablesink name=vsink enable-last-sample=true" % flip
+        )
+        try:
+            rest = Gst.parse_bin_from_description(desc, True)
+        except GLib.Error as exc:
+            self.show_toast("パイプラインを作れません: %s" % exc.message, 8)
+            return False
+
+        # 既定の src パッド（view-finder ロール）は 1280x720 が上限で、
+        # それを超えると Internal data stream error になる。
+        # リクエストパッドで still-capture を選ぶと 2560x1920 まで通る。
+        pad = src.request_pad_simple("src_0")
+        if pad is None:
+            self.show_toast("ストリームを要求できません", 8)
+            return False
+        pad.set_property("stream-role", "still-capture")
+
+        pipeline = Gst.Pipeline.new("camera")
+        pipeline.add(src)
+        pipeline.add(rest)
+        if pad.link(rest.get_static_pad("sink")) != Gst.PadLinkReturn.OK:
+            self.show_toast("パイプラインを接続できません", 8)
+            pipeline.set_state(Gst.State.NULL)
+            return False
+
+        rest.get_by_name("cf").set_property(
+            "caps", Gst.Caps.from_string(
+                "video/x-raw,width=%d,height=%d" % (w, h)))
+
+        sink = rest.get_by_name("vsink")
+        self.picture.set_paintable(sink.get_property("paintable"))
+        self.vsink = sink
+
+        bus = pipeline.get_bus()
+        bus.add_signal_watch()
+        bus.connect("message::error", self.on_gst_error)
+
+        self.pipeline = pipeline
+        self.pipeline.set_state(Gst.State.PLAYING)
+        return False
+
+    def stop_pipeline(self):
+        if not self.pipeline:
+            return
+        pipeline = self.pipeline
+        self.pipeline = None
+        self.src = None
+        self.vsink = None
+        bus = pipeline.get_bus()
+        bus.remove_signal_watch()
+        pipeline.set_state(Gst.State.NULL)
+        # NULL への遷移が終わるまで待つ。待たないと次の libcamerasrc が
+        # カメラを見つけられない。
+        pipeline.get_state(3 * Gst.SECOND)
+
+    def on_gst_error(self, _bus, msg):
+        err, _dbg = msg.parse_error()
+        self.show_toast("カメラのエラー: %s" % err.message, 8)
+
+    # ---------- 撮影 ----------
+
+    def capture(self):
+        if self.busy or not self.pipeline or not self.vsink:
+            return
+        self.busy = True
+        GLib.idle_add(self._grab)
+
+    def _grab(self):
+        try:
+            sample = self.vsink.get_property("last-sample")
+            if sample is None:
+                self.show_toast("フレームを取得できませんでした", 5)
+                return False
+            rgb, _gray = self._sample_to_arrays(sample)
+            if rgb is None:
+                self.show_toast("フレームを変換できませんでした", 5)
+                return False
+            path = self._save(rgb)
+            self.session_shots.append(path)
+            self._update_thumb(path)
+            self.show_toast("保存: %s" % os.path.basename(path), 4)
+        finally:
+            self.busy = False
+        return False
+
+    # ---------- QR 継続スキャン ----------
+
+    def on_qr_toggled(self, btn):
+        if btn.get_active():
+            self._start_scan()
+        else:
+            self._stop_scan()
+
+    def _start_scan(self):
+        try:
+            import zxingcpp  # noqa: F401
+        except ImportError:
+            self.show_toast(
+                "QR デコーダがありません（sudo apt install python3-zxing-cpp）", 9)
+            self.qr_btn.set_active(False)
+            return
+        self.scanning = True
+        self._scan_busy = False
+        self.qr_btn.set_label("停止")
+        self.qr_btn.add_css_class("scanning")
+        self.show_toast("QR を探しています… コードをカメラに向けてください", 4)
+        self._scan_id = GLib.timeout_add(250, self._scan_tick)
+
+    def _stop_scan(self):
+        self.scanning = False
+        if self._scan_id:
+            GLib.source_remove(self._scan_id)
+            self._scan_id = None
+        self.qr_btn.set_label("QR")
+        self.qr_btn.remove_css_class("scanning")
+
+    def _scan_tick(self):
+        if not self.scanning:
+            return False
+        if self._scan_busy or not self.vsink:
+            return True
+        sample = self.vsink.get_property("last-sample")
+        if sample is None:
+            return True
+        # 走査中は輝度だけ取り出す。RGB 変換はここでは行わない。
+        _rgb, gray = self._sample_to_arrays(sample, gray_only=True)
+        if gray is None:
+            return True
+        self._scan_busy = True
+        threading.Thread(target=self._scan_worker, args=(gray,),
+                         daemon=True).start()
+        return True
+
+    def _scan_worker(self, gray):
+        text = ""
+        try:
+            import zxingcpp
+            results = zxingcpp.read_barcodes(gray)
+            text = "\n".join(r.text for r in results if r.text)
+        except Exception:
+            text = ""
+        GLib.idle_add(self._scan_done, text)
+
+    def _scan_done(self, text):
+        self._scan_busy = False
+        if text and self.scanning:
+            self.qr_btn.set_active(False)   # モードを抜ける
+            self._show_qr_dialog(text)
+        return False
+
+    @staticmethod
+    def _sample_to_arrays(sample, gray_only=False):
+        """サンプルから (RGB配列, 輝度配列) を作る。NV12 と RGB 系に対応。"""
+        import numpy as np
+        st = sample.get_caps().get_structure(0)
+        w = st.get_value("width")
+        h = st.get_value("height")
+        fmt = st.get_string("format")
+        buf = sample.get_buffer()
+        ok, info = buf.map(Gst.MapFlags.READ)
+        if not ok:
+            return None, None
+        try:
+            # 走査中は毎秒4回呼ばれる。NV12 なら輝度面だけ写せば足りるので、
+            # 5MP で 7.4MB を丸ごとコピーするのは避ける。
+            if gray_only and fmt == "NV12" and len(info.data) >= w * h:
+                return None, np.frombuffer(
+                    info.data, dtype=np.uint8, count=w * h).reshape(h, w).copy()
+            raw = np.frombuffer(info.data, dtype=np.uint8).copy()
+        finally:
+            buf.unmap(info)
+
+        if fmt == "NV12":
+            if raw.size < w * h * 3 // 2:
+                return None, None
+            y = raw[:w * h].reshape(h, w)
+            if gray_only:
+                return None, y
+            uv = raw[w * h:w * h * 3 // 2].reshape(h // 2, w // 2, 2)
+            yf = y.astype(np.float32)
+            u = np.repeat(np.repeat(uv[:, :, 0], 2, 0), 2, 1).astype(np.float32) - 128.0
+            v = np.repeat(np.repeat(uv[:, :, 1], 2, 0), 2, 1).astype(np.float32) - 128.0
+            rgb = np.empty((h, w, 3), dtype=np.float32)
+            rgb[:, :, 0] = yf + 1.402 * v
+            rgb[:, :, 1] = yf - 0.344136 * u - 0.714136 * v
+            rgb[:, :, 2] = yf + 1.772 * u
+            return np.clip(rgb, 0, 255).astype(np.uint8), y.copy()
+
+        order = {"RGBA": (0, 1, 2, 4), "RGBx": (0, 1, 2, 4),
+                 "BGRA": (2, 1, 0, 4), "BGRx": (2, 1, 0, 4),
+                 "ARGB": (1, 2, 3, 4), "xRGB": (1, 2, 3, 4),
+                 "RGB": (0, 1, 2, 3), "BGR": (2, 1, 0, 3)}.get(fmt)
+        if order is None:
+            return None, None
+        r_i, g_i, b_i, stride = order
+        if raw.size < w * h * stride:
+            return None, None
+        arr = raw[:w * h * stride].reshape(h, w, stride)
+        rgb = np.stack([arr[:, :, r_i], arr[:, :, g_i], arr[:, :, b_i]], axis=2)
+        gray = (0.299 * rgb[:, :, 0] + 0.587 * rgb[:, :, 1]
+                + 0.114 * rgb[:, :, 2]).astype(np.uint8)
+        return (None if gray_only else rgb), gray
+
+    def _save(self, rgb):
+        from PIL import Image
+        base = GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_PICTURES) \
+            or os.path.expanduser("~")
+        outdir = os.path.join(base, "Camera")
+        os.makedirs(outdir, exist_ok=True)
+        stamp = time.strftime("%Y-%m-%d %H-%M-%S")
+        # 同じ秒に2枚撮ると上書きしてしまうので、衝突したら連番を足す。
+        path = os.path.join(outdir, "Photo %s.jpg" % stamp)
+        n = 1
+        while os.path.exists(path):
+            n += 1
+            path = os.path.join(outdir, "Photo %s (%d).jpg" % (stamp, n))
+        Image.fromarray(rgb).save(path, "JPEG", quality=92)
+        return path
+
+    # ---------- QR ----------
+
+    def _show_qr_dialog(self, text):
+        dlg = Gtk.Window(transient_for=self, modal=True, title="QR コード")
+        dlg.set_default_size(520, 240)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        box.set_margin_top(18); box.set_margin_bottom(18)
+        box.set_margin_start(18); box.set_margin_end(18)
+
+        view = Gtk.TextView(editable=False, wrap_mode=Gtk.WrapMode.CHAR)
+        view.add_css_class("qrresult")
+        view.get_buffer().set_text(text)
+        scroll = Gtk.ScrolledWindow(vexpand=True)
+        scroll.set_child(view)
+        box.append(scroll)
+
+        row = Gtk.Box(spacing=8, halign=Gtk.Align.END)
+        copy = Gtk.Button(label="コピー")
+        copy.connect("clicked", lambda *_: self.get_clipboard().set(text))
+        row.append(copy)
+        if text.startswith(("http://", "https://")):
+            openb = Gtk.Button(label="開く")
+            openb.connect(
+                "clicked",
+                lambda *_: Gtk.UriLauncher.new(text).launch(self, None, None, None))
+            row.append(openb)
+        close = Gtk.Button(label="閉じる")
+        close.connect("clicked", lambda *_: dlg.close())
+        row.append(close)
+        box.append(row)
+
+        dlg.set_child(box)
+        dlg.present()
+
+    # ---------- UI ----------
+
+    def _bright_label(self):
+        return "明るさ: %s" % BRIGHTNESS[self.bright_index][0]
+
+    def _apply_tuning(self):
+        """AGC 目標輝度のプリセットを環境変数で選ぶ。
+        libcamera はカメラを開くときにこの変数を読むので、
+        変更したらパイプラインを作り直す必要がある。"""
+        name = BRIGHTNESS[self.bright_index][1]
+        if name is None:
+            os.environ.pop("LIBCAMERA_IPU3_TUNING_FILE", None)
+        else:
+            os.environ["LIBCAMERA_IPU3_TUNING_FILE"] = \
+                os.path.join(TUNING_DIR, name)
+
+    def on_cycle_bright(self, _btn):
+        self.bright_index = (self.bright_index + 1) % len(BRIGHTNESS)
+        self.bright_btn.set_label(self._bright_label())
+        self._apply_tuning()
+        self.start_pipeline()
+        self.show_toast(self._bright_label(), 3)
+
+    # ---------- サムネイルとギャラリー ----------
+
+    def _update_thumb(self, path):
+        try:
+            pb = GdkPixbuf.Pixbuf.new_from_file_at_scale(path, 96, 96, True)
+        except GLib.Error:
+            return
+        pic = Gtk.Picture.new_for_pixbuf(pb)
+        pic.set_content_fit(Gtk.ContentFit.COVER)
+        pic.set_size_request(52, 52)
+        self.thumb_btn.set_child(pic)
+        self.thumb_btn.set_sensitive(True)
+
+    def open_gallery(self, index=None):
+        if not self.session_shots:
+            self.show_toast("まだ写真がありません", 3)
+            return
+        GalleryWindow(self, self.session_shots,
+                      len(self.session_shots) - 1 if index is None else index)
+
+    def on_switch_camera(self, _btn):
+        if len(self.cameras) < 2:
+            return
+        if self.scanning:
+            self.qr_btn.set_active(False)
+        self.cam_index = (self.cam_index + 1) % len(self.cameras)
+        self.res_index = 0
+        cam = self._cam()
+        self.cam_btn.set_label(cam["label"])
+        self.res_btn.set_label(self._res_label())
+        self.start_pipeline()
+        self.show_toast("%sカメラ" % cam["label"], 3)
+
+    def on_cycle_res(self, _btn):
+        self.res_index = (self.res_index + 1) % len(self._resolutions())
+        self.res_btn.set_label(self._res_label())
+        self.start_pipeline()
+        self.show_toast("解像度を %s に変更" % self._res_label(), 3)
+
+    def on_key(self, _c, keyval, _code, _state):
+        if keyval == Gdk.KEY_space:
+            self.capture(); return True
+        if keyval == Gdk.KEY_Escape and self.scanning:
+            self.qr_btn.set_active(False); return True
+        return False
+
+    def show_toast(self, text, seconds=3):
+        self.toast.set_text(text)
+        self.toast.set_visible(True)
+        if self._toast_id:
+            GLib.source_remove(self._toast_id)
+        self._toast_id = GLib.timeout_add_seconds(seconds, self._hide_toast)
+
+    def _hide_toast(self):
+        # id を消しておかないと、次の show_toast が死んだ id を
+        # source_remove して GLib の警告が出る。
+        self._toast_id = None
+        self.toast.set_visible(False)
+        return False
+
+    def on_close(self, *_):
+        self._stop_scan()
+        self.stop_pipeline()
+        return False
+
+
+class GalleryWindow(Gtk.Window):
+    """このセッションで撮った写真だけを見るビューア。"""
+
+    def __init__(self, parent, paths, index):
+        super().__init__(transient_for=parent, modal=True)
+        self.paths = paths
+        self.index = max(0, min(index, len(paths) - 1))
+        self.set_default_size(900, 640)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+
+        self.picture = Gtk.Picture()
+        self.picture.set_content_fit(Gtk.ContentFit.CONTAIN)
+        self.picture.set_vexpand(True)
+        box.append(self.picture)
+
+        bar = Gtk.CenterBox()
+        bar.set_margin_top(8); bar.set_margin_bottom(8)
+        bar.set_margin_start(12); bar.set_margin_end(12)
+
+        prev = Gtk.Button(label="◀")
+        prev.set_tooltip_text("前の写真 (←)")
+        prev.connect("clicked", lambda *_: self.step(-1))
+        nxt = Gtk.Button(label="▶")
+        nxt.set_tooltip_text("次の写真 (→)")
+        nxt.connect("clicked", lambda *_: self.step(1))
+        left = Gtk.Box(spacing=8)
+        left.append(prev); left.append(nxt)
+        bar.set_start_widget(left)
+
+        self.counter = Gtk.Label()
+        bar.set_center_widget(self.counter)
+
+        right = Gtk.Box(spacing=8)
+        folder = Gtk.Button(label="フォルダを開く")
+        folder.connect("clicked", self.on_open_folder)
+        close = Gtk.Button(label="閉じる")
+        close.connect("clicked", lambda *_: self.close())
+        right.append(folder); right.append(close)
+        bar.set_end_widget(right)
+
+        box.append(bar)
+        self.set_child(box)
+
+        keys = Gtk.EventControllerKey()
+        keys.connect("key-pressed", self.on_key)
+        self.add_controller(keys)
+
+        swipe = Gtk.GestureSwipe()
+        swipe.connect("swipe", self.on_swipe)
+        self.picture.add_controller(swipe)
+
+        self.refresh()
+        self.present()
+
+    def refresh(self):
+        path = self.paths[self.index]
+        self.picture.set_filename(path)
+        self.set_title(os.path.basename(path))
+        self.counter.set_text("%d / %d" % (self.index + 1, len(self.paths)))
+
+    def step(self, delta):
+        self.index = (self.index + delta) % len(self.paths)
+        self.refresh()
+
+    def on_swipe(self, _g, vx, _vy):
+        if abs(vx) > 100:
+            self.step(-1 if vx > 0 else 1)
+
+    def on_key(self, _c, keyval, _code, _state):
+        if keyval in (Gdk.KEY_Left, Gdk.KEY_Up):
+            self.step(-1); return True
+        if keyval in (Gdk.KEY_Right, Gdk.KEY_Down):
+            self.step(1); return True
+        if keyval == Gdk.KEY_Escape:
+            self.close(); return True
+        return False
+
+    def on_open_folder(self, _btn):
+        folder = Gio.File.new_for_path(os.path.dirname(self.paths[self.index]))
+        Gtk.FileLauncher.new(folder).launch(self, None, None, None)
+
+
+class CameraApp(Gtk.Application):
+    def __init__(self):
+        super().__init__(application_id=APP_ID,
+                         flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
+
+    def do_startup(self):
+        Gtk.Application.do_startup(self)
+        Gst.init(None)
+        provider = Gtk.CssProvider()
+        provider.load_from_data(CSS)
+        Gtk.StyleContext.add_provider_for_display(
+            Gdk.Display.get_default(), provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+    def do_activate(self):
+        win = self.props.active_window
+        if not win:
+            cams = find_cameras()
+            win = CameraWindow(self, cams)
+            if not cams:
+                win.show_toast("カメラが見つかりません", 8)
+        win.present()
+
+
+if __name__ == "__main__":
+    sys.exit(CameraApp().run(sys.argv))

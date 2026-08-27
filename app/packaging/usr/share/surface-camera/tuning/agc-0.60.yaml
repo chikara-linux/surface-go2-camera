@@ -1,0 +1,14 @@
+# surface-camera 用の明るさプリセット。
+# システムの /usr/share/libcamera/ipa/ipu3/ov5693.yaml (target 0.30) を基に
+# AGC の目標輝度だけを変えたもの。アプリが LIBCAMERA_IPU3_TUNING_FILE で選ぶ。
+%YAML 1.1
+---
+version: 1
+algorithms:
+  - Af:
+  - Agc:
+      relativeLuminanceTarget: 0.60
+  - Awb:
+  - BlackLevelCorrection:
+  - ToneMapping:
+...

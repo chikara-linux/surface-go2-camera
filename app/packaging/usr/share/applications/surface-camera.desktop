@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Camera
+Name[ja]=カメラ
+Comment=Take photos and scan QR codes
+Comment[ja]=写真の撮影と QR コードの読み取り
+Exec=surface-camera
+Icon=surface-camera
+Terminal=false
+Categories=AudioVideo;Video;Photography;
+Keywords=camera;photo;webcam;qr;
+Keywords[ja]=カメラ;写真;QR;
+StartupNotify=true

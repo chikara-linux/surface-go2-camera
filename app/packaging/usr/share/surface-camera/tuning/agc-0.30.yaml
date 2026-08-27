@@ -1,0 +1,12 @@
+# surface-camera 用の明るさプリセット（控えめ）。
+%YAML 1.1
+---
+version: 1
+algorithms:
+  - Af:
+  - Agc:
+      relativeLuminanceTarget: 0.30
+  - Awb:
+  - BlackLevelCorrection:
+  - ToneMapping:
+...

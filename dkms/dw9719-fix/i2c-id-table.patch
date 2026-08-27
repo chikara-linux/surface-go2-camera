@@ -1,0 +1,26 @@
+--- a/drivers/media/i2c/dw9719.c
++++ b/drivers/media/i2c/dw9719.c
+@@ -448,6 +448,15 @@
+ };
+ MODULE_DEVICE_TABLE(of, dw9719_of_table);
+ 
++static const struct i2c_device_id dw9719_id_table[] = {
++	{ "dw9718s", DW9718S },
++	{ "dw9719",  DW9719 },
++	{ "dw9761",  DW9761 },
++	{ "dw9800k", DW9800K },
++	{ }
++};
++MODULE_DEVICE_TABLE(i2c, dw9719_id_table);
++
+ static DEFINE_RUNTIME_DEV_PM_OPS(dw9719_pm_ops, dw9719_suspend, dw9719_resume,
+ 				 NULL);
+ 
+@@ -457,6 +466,7 @@
+ 		.pm = pm_sleep_ptr(&dw9719_pm_ops),
+ 		.of_match_table = dw9719_of_table,
+ 	},
++	.id_table = dw9719_id_table,
+ 	.probe = dw9719_probe,
+ 	.remove = dw9719_remove,
+ };

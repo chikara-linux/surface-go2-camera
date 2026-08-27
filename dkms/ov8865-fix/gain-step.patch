@@ -1,0 +1,20 @@
+--- a/drivers/media/i2c/ov8865.c
++++ b/drivers/media/i2c/ov8865.c
+@@ -2529,7 +2529,16 @@
+ 
+ 	/* Gain */
+ 
+-	v4l2_ctrl_new_std(handler, ops, V4L2_CID_ANALOGUE_GAIN, 128, 2048, 128,
++	/*
++	 * The gain registers (0x3508/0x3509) hold a 13 bit value where 128
++	 * means 1x, so the hardware resolution is 1/128 of a step. Declaring
++	 * a step of 128 restricts the control to whole multipliers (1x, 2x,
++	 * ... 16x). When an auto exposure algorithm asks for a gain between
++	 * two of those, the value is snapped and the picture alternates
++	 * between too dark and too bright, which shows up as visible
++	 * oscillation. Advertise the resolution the hardware actually has.
++	 */
++	v4l2_ctrl_new_std(handler, ops, V4L2_CID_ANALOGUE_GAIN, 128, 2048, 1,
+ 			  128);
+ 
+ 	/* White Balance */

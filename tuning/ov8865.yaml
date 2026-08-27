@@ -1,0 +1,23 @@
+# Surface Go 2 (OV8865 背面カメラ) 向け IPU3 チューニング
+#
+# これが無いと uncalibrated.yaml にフォールバックし、AGC の目標輝度が
+# 既定の 0.16 のままで暗い。フロント (ov5693.yaml) と同じ 0.40 に揃える。
+#
+# 注意: このファイルは AE のハンチング（明暗の往復）を直さない。
+# それは libcamera のセンサー特性データベースに ov8865 の sensorDelays が
+# 無いことが原因で、チューニングファイルでは手が届かない。詳細は
+# docs/investigation.md を参照。
+#
+# 導入: sudo cp ov8865.yaml /usr/share/libcamera/ipa/ipu3/
+# 撤去: sudo rm /usr/share/libcamera/ipa/ipu3/ov8865.yaml
+%YAML 1.1
+---
+version: 1
+algorithms:
+  - Af:
+  - Agc:
+      relativeLuminanceTarget: 0.40
+  - Awb:
+  - BlackLevelCorrection:
+  - ToneMapping:
+...
