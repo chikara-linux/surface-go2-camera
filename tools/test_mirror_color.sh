@@ -4,7 +4,7 @@
 # その条件下で mirror だけ色が違えば、反転が原因と確定できる。
 set -u
 D=$(mktemp -d); cd "$D" || exit 1
-OUT=~/camera-fix-evidence
+OUT="${OUT:-$PWD}"
 CAM=${1:-2}; W=${2:-1280}; H=${3:-720}
 
 shot() {  # $1=向き $2=ラベル

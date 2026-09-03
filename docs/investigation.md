@@ -255,7 +255,7 @@ clean:
 
 ```bash
 sudo apt install dkms
-sudo cp -r ~/dw9719-fix-1.0 /usr/src/
+sudo cp -r dkms/dw9719-fix /usr/src/
 sudo dkms install -m dw9719-fix -v 1.0
 ```
 
@@ -515,7 +515,7 @@ frames:
 ## 8.5 専用カメラアプリ surface-camera
 
 2026-08-27 に自作。Snapshot を置き換える。ソースとパッケージは
-`~/surface-camera/`、詳細は `/usr/share/doc/surface-camera/README`。
+`app/`、詳細は `/usr/share/doc/surface-camera/README`。
 
 #### なぜ専用アプリが要ったか
 
@@ -605,7 +605,7 @@ libcamera は `sensor/camera_sensor_legacy.cpp:373` で、ドライバが HFLIP/
 理由は **IPU3 パイプラインハンドラが `bayerOrder()` を一度も呼ばないから**。
 `pipeline/ipu3/` の `ipu3.cpp` `cio2.cpp` `imgu.cpp` `frames.cpp` すべてで参照ゼロ
 （比較: `pipeline/rpi/common/pipeline_base.cpp` は呼ぶ）。
-このパッチは `~/ov5693-fix-1.0/superseded/modify-layout.patch` に記録として残してある。
+このパッチは `dkms/ov5693-fix/superseded/modify-layout.patch` に記録として残してある。
 
 #### 解決した方法（採用・動作確認済み）
 
@@ -622,7 +622,7 @@ outputFormat->fourcc = output_->toV4L2PixelFormat(itInfo->second);
 つまり**ドライバが正しい Bayer 配列を報告しさえすれば libcamera は自動で追従する。**
 `/dev/video0` は ip3G / ip3g / ip3b / ip3r の4種すべてに対応済み。
 
-そこで `ov5693.c` に2点の変更を入れた（`~/ov5693-fix-1.0/orientation-fix.patch`）:
+そこで `ov5693.c` に2点の変更を入れた（`dkms/ov5693-fix/orientation-fix.patch`）:
 
 1. **HFLIP コントロールの意味を反転** — コントロール 0（libcamera が常に書く値）で
    センサーの水平反転が有効になるようにした。`s_stream()` で
@@ -633,7 +633,7 @@ outputFormat->fourcc = output_->toV4L2PixelFormat(itInfo->second);
 導入（バージョンは 1.0 のまま中身を差し替える方式。撤去不要）:
 
 ```bash
-sudo cp ~/ov5693-fix-1.0/ov5693.c /usr/src/ov5693-fix-1.0/
+sudo cp dkms/ov5693-fix/ov5693.c /usr/src/ov5693-fix-1.0/
 sudo dkms build   -m ov5693-fix -v 1.0 --force
 sudo dkms install -m ov5693-fix -v 1.0 --force
 # 再起動
@@ -789,7 +789,7 @@ vblank は書き込み可能で `s_stream()` の `__v4l2_ctrl_handler_setup()` �
 	__v4l2_ctrl_s_ctrl(sensor->ctrls.vblank, vblank_def);
 ```
 
-パッチは `~/ov8865-fix-1.0/vblank-stale-value.patch` に保存してある。
+パッチは `dkms/ov8865-fix/vblank-stale-value.patch` に保存してある。
 
 **効果（実測）:**
 
@@ -811,7 +811,7 @@ vblank は書き込み可能で `s_stream()` の `__v4l2_ctrl_handler_setup()` �
 失い、カーネル更新のたびに再ビルドされる DKMS が増えるだけだったため。
 `ov5693` の `MODIFY_LAYOUT` 版と同じ判断（上流的には正しいが、この機体では何も変わらない）。
 
-ソースとパッチは `~/ov8865-fix-1.0/` に残してある。**再導入しても症状は治らない。**
+ソースとパッチは `dkms/ov8865-fix/` に残してある。**再導入しても症状は治らない。**
 
 #### ここで止めた理由
 
@@ -1049,7 +1049,7 @@ dkms
 /usr/src/dw9719-fix-1.0/                        DKMS ソース一式
 ├── i2c-id-table.patch                          パッチ差分
 └── dw9719-patched.ko                           事前ビルド版（削除可）
-~/dw9719-fix-1.0/                               上と同じもの。作業用の控え
+dkms/dw9719-fix/                               上と同じもの。作業用の控え
 
 ~/.config/wireplumber/wireplumber.conf.d/
 └── 50-hide-back-camera.conf                    リアカメラ非表示化
@@ -1058,16 +1058,16 @@ dkms
 
 /usr/src/ov5693-fix-1.0/                        DKMS ソース（向き補正）
 /usr/src/ov8865-fix-1.1/                        DKMS ソース（ゲイン粒度）
-~/ov8865-fix-1.1/
+dkms/ov8865-fix/
 ├── gain-step.patch                             採用したパッチ
 ├── README.txt                                  原因・切り分け・検証手順
 └── superseded/vblank-stale-value.patch         効果が無かった版（記録）
 
-~/surface-camera/                               専用カメラアプリ
+app/                               専用カメラアプリ
 ├── src/surface-camera                          本体（Python + GTK4）
 ├── build/                                      .deb の中身
 └── surface-camera_1.9_all.deb
-~/ov5693-fix-1.0/
+dkms/ov5693-fix/
 ├── orientation-fix.patch                       採用したパッチ
 ├── README.txt                                  導入・撤去・検証の手順
 └── superseded/modify-layout.patch              効果が無かった版（記録）

@@ -24,7 +24,7 @@ ov8865-fix — 背面カメラの AE ハンチング（明暗の往復）を止�
     前面は同じゲイン領域で完全に安定していた。libcamera の再ビルドは不要
 
 導入:
-  sudo cp -r ~/ov8865-fix-1.1 /usr/src/
+  sudo cp -r dkms/ov8865-fix /usr/src/
   sudo dkms install -m ov8865-fix -v 1.1
   再起動（ov8865 の rmmod は cio2 の notifier を崩すため）
 
