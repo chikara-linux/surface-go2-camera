@@ -43,7 +43,7 @@ dkms/ov5693-fix/     前面の左右反転と Bayer 配列
 dkms/ov8865-fix/     背面の AE ハンチング（ゲイン粒度）
 tuning/              libcamera IPU3 の AGC 目標輝度（既定 0.16 は暗すぎる）
 wireplumber/         壊れたモードを踏む背面を PipeWire から隠すルール
-app/                 専用カメラアプリ surface-camera
+app/                 専用カメラアプリ surface-camera（Kirigami / PyQt6）
 tools/               NV12/raw の復元、各種切り分けスクリプト
 docs/                調査記録
 ```
@@ -72,9 +72,17 @@ cp wireplumber/*.conf ~/.config/wireplumber/wireplumber.conf.d/
 
 **PipeWire 経由では 1280x720 が上限。** SPA プラグインが view-finder ロールで
 ノードを作るため、ポータル経由のアプリはそこで頭打ちになる。
-`libcamerasrc` のリクエストパッドに `stream-role=still-capture` を指定すると
+`libcamerasrc` のパッドに `stream-role=still-capture` を指定すると
 **2560x1920** まで使える。副産物として、PipeWire を経由しないので
 WirePlumber で隠してある背面カメラもアプリからは使える。
+
+UI は Kirigami、映像は appsink で受けた NV12 を QVideoFrame に包んで
+QML の VideoOutput に流している。**GL 経路は意図的に避けている** —
+`qml6glsink` は見た目には動くが、設定変更のたびに GL コンテキストが累積し
+4〜5 回で abort する。libcamerasrc の要素を使い回すのも駄目で、
+カメラを開き直すと `libgstlibcamera` が停止済みのリクエストに触れて落ちる。
+設定変更のたびに要素ごと作り直し、GL を使わない構成だけが安定した
+（切替 19 回で確認）。詳細は `app/packaging/usr/share/doc/surface-camera/README`。
 
 ## 撤去
 

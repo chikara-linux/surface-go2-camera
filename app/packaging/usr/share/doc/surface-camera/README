@@ -1,87 +1,74 @@
-surface-camera
+surface-camera — Surface Go 2 (IPU3 / libcamera) 向けカメラアプリ
 
 なぜ専用アプリなのか
   この機体のカメラは V4L2 の通常デバイスとして見えず、libcamera 経由でしか
   使えない。さらに PipeWire のノードは 1280x720 までしか提示しないため、
-  Snapshot などポータル経由のアプリはそれが上限になる。
-  libcamerasrc で libcamera を直接叩くと 2560x1920 まで使えるので、
-  このアプリはその経路を採っている。実測でどちらの解像度でも 28.7 fps 出る。
+  ポータル経由のアプリはそれが上限になる。libcamerasrc で libcamera を
+  直接叩くと 2560x1920 まで使え、PipeWire から隠してある背面カメラにも
+  届く。
 
 操作
-  シャッター     中央のボタン、または Space
+  シャッター     中央のボタン
   解像度切替     左上のボタン。カメラごとに選べる値が違う
                    前面 2560x1920 / 1920x1440 / 1280x720
                    背面 2560x1920 / 2048x1536
-  カメラ切替     上部中央のボタン（前面 / 背面）。起動時の既定は背面
-  QR 読み取り    右下の QR ボタンで読み取りモードに入る。
-                 認識するまで継続して走査し、見つかった時点で結果を表示して
-                 自動的にモードを抜ける。Esc またはもう一度押すと中止。
-                 デコードは別スレッドで動くのでプレビューは止まらない。
+  カメラ切替     上部中央のボタン。起動時の既定は背面
+  明るさ         右上のボタン。標準 / 控えめ / 明るい / 最大。
+                 AGC の目標輝度を切り替える。標準はシステムの
+                 ov5693.yaml / ov8865.yaml（target 0.40）。
+                 0.50 以上は白飛びするので常用は標準でよい
+  QR 読み取り    右下のボタンで読み取りモードに入る。認識するまで走査し、
+                 見つかった時点で結果を表示してモードを抜ける。
+                 Esc かもう一度押すと中止
+  写真を見る     左下のサムネイル。このセッションで撮った写真だけを表示。
+                 「閉じる」か Esc で戻る
 
-  明るさ         右上のボタン。標準 / 控えめ / 明るい / 最大 の4段階。
-                 AGC の目標輝度 (relativeLuminanceTarget) を切り替える。
-                 標準はシステムの ov5693.yaml（target 0.40）。
-                 0.50 以上は白飛びするので常用は標準でよい。
-                 切り替えるとパイプラインを作り直すので一瞬途切れる
-  写真を見る     左下のサムネイル。押すとビューアが開く。
-                 見えるのは **このセッションで撮った写真だけ** で、
-                 Camera フォルダ全体は辿らない。←→ とスワイプで送る
-
-  全画面表示は用意していない。ステータスバーを隠さない方針。
+  ウィンドウが前面にないときはカメラを解放する。撮影していないのに
+  掴んだままにしない。
 
 保存先
   ~/ピクチャ/Camera/Photo YYYY-MM-DD HH-MM-SS.jpg
 
+設計上の注意（すべて実機で踏んだ）
+  ・libcamerasrc の常設 src パッドは既定が view-finder ロールで
+    1280x720 が上限。stream-role=still-capture にすると 2560x1920 まで通る
+  ・camera-name はバックスラッシュ (\_SB_.PCI0.LNK1) を含むので
+    parse_launch の文字列に埋め込まず、プロパティに直接設定する
+  ・libcamerasrc の要素は使い回さない。NULL↔PLAYING で再利用すると
+    カメラを開き直した際に libgstlibcamera が停止済みのリクエストに触れ、
+    assertion 'wrap->request_.get() == request' で落ちる。
+    設定変更のたびに要素ごと作り直すこと
+  ・GL 経路を使わない。qml6glsink は memory:GLMemory 必須で見た目は
+    動くが、作り直すたびに GL コンテキストが累積し 4〜5 回で abort する。
+    appsink で NV12 を受けて QVideoFrame に包み QML の VideoOutput へ
+    流す方式なら通常メモリのまま扱えて安定する（19 回の切替で確認）
+  ・映像の取り込みは GUI スレッドから try-pull-sample で行う。
+    スレッド跨ぎが無く、UI が詰まれば自然に間引かれる
+  ・ワーカースレッドから QTimer.singleShot は使えない。イベントループを
+    持たないスレッドでは発火しない。結果は Qt のシグナルで返す
+  ・終了時は main() から戻る前に os._exit する。戻るとローカルが破棄され、
+    PyGObject と PyQt6 の解放順序が衝突して segfault する
+  ・IPU3 の IPA は ExposureValue / Brightness / Contrast / Gamma /
+    AnalogueGain / AfMode を実装していない。libcamerasrc にプロパティは
+    あるが黙って無視される。cam --list-controls に出ないものは効かない
+  ・libcamera は使用中のカメラを「見つからない」と報告する。
+    切り分けのときは先にアプリを終了すること
+
 背面カメラについて
   PipeWire からは WirePlumber のルールで隠してあるが、このアプリは
-  libcamerasrc で libcamera を直接叩くので影響を受けず、使える。
-  ただし制約がある。
+  libcamera を直接叩くので使える。制約がある。
    ・1632x1224 以下を要求すると壊れたセンサーモードが選ばれ、
      1フレーム目で停止する。だから小さい解像度は用意していない
-   ・3264x2448 は ImgU が受け付けない（Internal data stream error）
+   ・3264x2448 は ImgU が受け付けない
    ・15fps 前後。前面の 28fps より遅い
-   ・左右反転しているので videoflip で補正している。実測でコストはゼロ
+   ・左右反転しているので videoflip で補正している
    ・オートフォーカスは効く（dw9719 VCM を DKMS で修理済み）
-   ・AE がハンチングする（0.5秒ほどの周期で明暗を往復）ことがある。
-     libcamera のセンサー特性 DB に ov8865 の sensorDelays が無く、
-     既定値 (exposureDelay=2, gainDelay=1) が使われるため。露出とゲインで
-     想定遅延が食い違い、AGC が過補正して振動する。
-     アプリ側では直せない。ExposureTime は登録されているだけで IPA が
-     手動値を読まないので AE ロックも作れず、AGC のフィルタ係数
-     (speed=0.2) もハードコードでチューニングファイルから触れない。
-     直すには libcamera の camera_sensor_properties.cpp に
-     sensorDelays を足して再ビルドするしかない
+   ・AE のハンチングは ov8865-fix の DKMS で解消済み
 
 既知の制約
   ・中央より周辺が暗くなる（周辺減光）。IPU3 の IPA にシェーディング補正
-    アルゴリズムが無いため補正できない。実装されているのは Agc / Awb / Af /
-    BlackLevelCorrection / ToneMapping の5つだけ
-  ・フロントカメラは固定焦点。QR は距離を変えて試すこと
-  ・リアカメラは別問題で常用できないため、意図的に対象外
-  ・QR は python3-zxing-cpp を使う
-  ・映像の左右反転は ov5693-fix の DKMS 側で補正済み
-
-既知の弱点（未対応）
-  ・撮影時の色変換と JPEG 保存をメインスレッドでやっている。5MP だと
-    シャッターを押してから一瞬 UI が止まる。気になるなら別スレッドへ
-  ・ギャラリーは session_shots のリストを参照で持つ。開いている間に
-    撮影すると枚数表示がずれる（実害は無い）
-
-設計上の注意
-  ・撮影用の枝を tee で常設してはいけない。バッファを握り続けて
-    ソースのプールを圧迫し、5MP で 28.6fps → 19.2fps に落ちる。
-    撮影は表示シンクの last-sample から取り出すこと
-  ・libcamerasrc の既定パッドは view-finder ロールで 1280x720 が上限。
-    リクエストパッド src_0 に stream-role=still-capture を指定すること
-  ・camera-name はバックスラッシュを含むので parse_launch の文字列に
-    埋め込まず、プロパティに直接設定すること
-  ・libcamera は使用中のカメラを「見つからない」と報告する。
-    切り分けのときは先にアプリを終了すること
-  ・IPU3 の IPA は ExposureValue / Brightness / Contrast / Gamma /
-    AnalogueGain を実装していない。libcamerasrc にプロパティはあるが
-    黙って無視される（cam --list-controls に出ないものは効かない）。
-    明るさを変える唯一の手段は AGC の目標輝度で、チューニングファイル
-    にしか書けない。LIBCAMERA_IPU3_TUNING_FILE はカメラを開くときに
-    読まれるので、変更後はパイプラインの作り直しが要る
+    アルゴリズムが無いため補正できない
+  ・タップフォーカスは作れない。AF 制御が libcamera に出ていない
+  ・撮影時の色変換と JPEG 保存はメインスレッドで行う。5MP だと一瞬止まる
 
 詳細な調査記録: docs/investigation.md

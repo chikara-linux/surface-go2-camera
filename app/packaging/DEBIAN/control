@@ -1,22 +1,25 @@
 Package: surface-camera
-Version: 2.0
+Version: 3.0
 Section: graphics
 Priority: optional
 Architecture: all
-Depends: python3, python3-gi, gir1.2-gtk-4.0, gir1.2-gst-plugins-base-1.0,
- gstreamer1.0-libcamera, gstreamer1.0-gtk4, gstreamer1.0-plugins-base,
- gstreamer1.0-plugins-good, libcamera-ipa, python3-numpy, python3-pil,
- gir1.2-gdkpixbuf-2.0
+Depends: python3, python3-gi, python3-pyqt6, python3-pyqt6.qtquick,
+ python3-pyqt6.qtmultimedia, qml6-module-org-kde-kirigami,
+ qml6-module-qtmultimedia, qml6-module-qtquick-controls,
+ qml6-module-qtquick-layouts, gstreamer1.0-libcamera,
+ gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, libcamera-ipa,
+ python3-numpy, python3-pil
 Recommends: python3-zxing-cpp
 Maintainer: chikara-linux <320610001+chikara-linux@users.noreply.github.com>
 Description: Camera app for the Surface Go 2 IPU3 camera
- A touch friendly camera application that talks to libcamera directly
- through GStreamer's libcamerasrc, instead of going through PipeWire.
+ A touch friendly Kirigami camera application that talks to libcamera
+ directly through GStreamer's libcamerasrc, instead of going through
+ PipeWire.
  .
  On this hardware the PipeWire camera node only advertises up to
- 1280x720, while the front sensor can be driven at 2560x1920. Using
- libcamerasrc directly makes the full 5 megapixels available, which is
- what makes QR code scanning practical on a fixed focus front camera.
+ 1280x720, while the sensors can be driven at 2560x1920. Using
+ libcamerasrc directly makes the full 5 megapixels available, and also
+ reaches the rear camera that is deliberately hidden from PipeWire.
  .
  Photos are written to the Camera folder inside the user's Pictures
- directory. QR decoding uses python3-zxing-cpp, falling back to zbarimg if present.
+ directory. QR decoding uses python3-zxing-cpp.
