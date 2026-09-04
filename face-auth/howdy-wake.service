@@ -1,0 +1,23 @@
+[Unit]
+# ロック中に画面が点いたら顔認証を開始させる。
+# 詳細と経緯は howdy-wake.py の冒頭を参照。
+Description=Start face authentication when the screen wakes while locked
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/howdy-wake
+Restart=on-failure
+RestartSec=5
+
+# 触るのは /dev/uinput と sysfs の読み取りだけ。余計な権限を持たせない。
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=read-only
+ProtectSystem=strict
+RestrictAddressFamilies=AF_UNIX
+MemoryMax=64M
+
+[Install]
+WantedBy=graphical-session.target

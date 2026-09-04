@@ -1,11 +1,127 @@
 diff --git a/howdy/src/compare.py b/howdy/src/compare.py
-index 929c127..8732d38 100644
+index 929c127..6518401 100644
 --- a/howdy/src/compare.py
 +++ b/howdy/src/compare.py
-@@ -71,6 +71,82 @@ def init_detector(lock):
+@@ -12,7 +12,21 @@ timings = {
+ # Import required modules
+ import sys
+ import os
++
++# 親プロセスをここで固定する。cv2/numpy の読み込みだけで数百ms かかり、
++# その間にグリーターが Qt.quit() で終了して systemd --user に引き取られる
++# ことがある。後方の _parent_is_greeter() が生きた os.getppid() を見ると、
++# この一瞬の間に判定が変わってしまう（実際に観測した:
++# 認証成功で greeter が終了 → 0.9 秒後には親が systemd --user になっていた）。
++_STARTUP_PPID = os.getppid()
++try:
++	_STARTUP_PARENT_IS_GREETER = open(
++		"/proc/%d/comm" % _STARTUP_PPID).read().startswith("kscreenlocker")
++except Exception:
++	_STARTUP_PARENT_IS_GREETER = False
++
+ import json
++import fcntl
+ import configparser
+ import cv2
+ from datetime import timezone, datetime
+@@ -71,6 +85,176 @@ def init_detector(lock):
  	lock.release()
  
  
++_SUCCESS_MARK = "/run/user/%d/howdy-last-success" % os.getuid()
++# 成功の直後に起動した認証を弾く時間。実測では 2 回目は成功から 0.4 秒後に
++# 起動していたので、5 秒あれば十分に捉えられる。長くすると「解除してすぐ
++# ロックし、また顔で解除したい」場面で待たされるので、余裕を見つつ短くする。
++SUCCESS_COOLDOWN = 5.0
++
++
++def _mark_success():
++	try:
++		with open(_SUCCESS_MARK, "w") as f:
++			f.write(str(time.time()))
++	except Exception:
++		pass
++
++
++def _recently_succeeded():
++	"""直前に認証が成功していれば True。
++
++	ロック画面へ Enter を送って認証を起こす方式では、空 PIN の送信で対話型の
++	認証が 1 回失敗する。その後始末の過程で、解除が済んだあとにもう一度
++	認証が起動する。実測:
++
++	    22:16:19.587  Login approved
++	    22:16:19.809  1 回目が終了
++	    22:16:19.998  2 回目が起動（このときロックは解除済み）
++	    22:16:20.441  発光体が点灯   ← 解除後に赤外線カメラが動く
++
++	同時実行ではないので flock では捉えられない。解錠済み判定も、起動の
++	瞬間はまだ解除処理の途中で、D-Bus の問い合わせにかかる時間の間に
++	境界をまたぐ。「直前に成功したか」で判断するのが確実。
++	"""
++	try:
++		return time.time() - float(open(_SUCCESS_MARK).read()) < SUCCESS_COOLDOWN
++	except Exception:
++		return False
++
++
++_CAPTURE_LOCK = "/run/user/%d/howdy-compare.lock" % os.getuid()
++_capture_lock_fd = None
++
++
++def _claim_capture():
++	"""カメラを使う権利を取る。他が撮影中なら False。
++
++	ロック画面へ Enter を送って認証を起こす方式では、空 PIN の送信で
++	対話型の認証が必ず 1 回失敗し、その失敗が graceLockTimer を動かして
++	3 秒後に認証をやり直させる。1 回目がまだ撮影中でも 2 回目が始まるため、
++	解除の直後に発光体がもう一度光る。実測:
++
++	    22:02:06.317  空 PIN 失敗 → graceLockTimer 3秒
++	    22:02:09.3    2 回目の認証が開始（まだロック中）
++	    22:02:10.352  1 回目が成功して解除
++
++	解錠済みかどうかでは判別できない。先行インスタンスの有無で判断する。
++	flock はプロセス終了時に必ず解放されるので、取り残しの心配がない。
++	"""
++	global _capture_lock_fd
++	try:
++		_capture_lock_fd = os.open(_CAPTURE_LOCK, os.O_CREAT | os.O_RDWR, 0o600)
++		fcntl.flock(_capture_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
++		return True
++	except OSError:
++		return False
++	except Exception:
++		return True          # 判定できない環境では従来どおり動かす
++
++
++def _parent_is_greeter():
++	"""親がロック画面のグリーターか。comm は15文字で切れる点に注意。
++
++	起動直後に固定した _STARTUP_PARENT_IS_GREETER を返す。生きた
++	os.getppid() を見てはいけない（上のコメント参照）。
++	"""
++	return _STARTUP_PARENT_IS_GREETER
++
++
++def _session_locked():
++	"""ロック画面が出ているか。判定できなければ None。
++
++	PAM 経由では環境変数が絞られるので、セッションバスの位置を明示する。
++	"""
++	try:
++		env = dict(os.environ)
++		env.setdefault("DBUS_SESSION_BUS_ADDRESS",
++			"unix:path=/run/user/%d/bus" % os.getuid())
++		out = subprocess.run(
++			["/usr/bin/qdbus6", "org.freedesktop.ScreenSaver", "/ScreenSaver",
++			 "org.freedesktop.ScreenSaver.GetActive"],
++			env=env, capture_output=True, text=True, timeout=3).stdout.strip()
++	except Exception:
++		return None
++	return {"true": True, "false": False}.get(out)
++
++
 +def eye_reflection(gray, face):
 +	"""網膜反射の強さを両目について返す。
 +
@@ -85,18 +201,19 @@ index 929c127..8732d38 100644
  def make_snapshot(type):
  	"""Generate snapshot after detection"""
  	snapshot.generate(snapframes, [
-@@ -121,6 +197,10 @@ frames = 0
+@@ -121,6 +305,11 @@ frames = 0
  snapframes = []
  # Tracks the best (highest) cosine similarity in the loop
  best_similarity = 0
 +# 顔は一致したが目が閉じていた、を記録する
 +eyes_closed_seen = False
++_orig_ppid = _STARTUP_PPID if _parent_is_greeter() else None
 +match_streak = 0          # 連続で一致したフレーム数
 +last_match_frame = -2     # 直近で一致したフレーム番号
  # Face detection/recognition instances
  face_detector = None
  face_recognizer = None
-@@ -147,6 +227,11 @@ config.read(paths_factory.config_file_path())
+@@ -147,6 +336,11 @@ config.read(paths_factory.config_file_path())
  timeout = config.getint("video", "timeout", fallback=4)
  dark_threshold = config.getfloat("video", "dark_threshold", fallback=50.0)
  video_certainty = config.getfloat("video", "certainty", fallback=0.40)
@@ -108,7 +225,43 @@ index 929c127..8732d38 100644
  detection_threshold = config.getfloat("video", "detection_threshold", fallback=0.9)
  end_report = config.getboolean("debug", "end_report", fallback=False)
  save_failed = config.getboolean("snapshots", "save_failed", fallback=False)
-@@ -243,6 +328,10 @@ while True:
+@@ -178,6 +372,23 @@ lock = threading.Lock()
+ lock.acquire()
+ threading.Thread(target=init_detector, args=(lock,), daemon=True).start()
+ 
++# 解錠済みなら、カメラを開かずに終わる。
++#
++# ロック画面に Enter を送って認証を起こす方式では、空 PIN の送信によって
++# 対話型の認証が必ず 1 回失敗する。その失敗が graceLockTimer を動かし、
++# 3 秒後に認証をやり直させる。顔認証の成功がそれより遅いと、解除処理と
++# 並行して 2 回目がここまで来てしまい、ホーム画面に戻った直後に
++# 赤外線の発光体が光る。解錠済みのセッションでカメラを回す理由はない。
++#
++# CLI から叩く場合（howdy test など）は親がグリーターではないので通す。
++if _parent_is_greeter():
++	if _recently_succeeded():
++		exit(11)          # 直前に解除済み。カメラを開かずに退く
++	if _session_locked() is False:
++		exit(11)
++	if not _claim_capture():
++		exit(11)          # 先行インスタンスが撮影中。カメラを開かずに退く
++
+ # Start video capture on the IR camera
+ timings["ic"] = time.time()
+ 
+@@ -225,6 +436,11 @@ while True:
+ 	# Increment the frame count every loop
+ 	frames += 1
+ 
++	# 撮影中に解除されたら止める。グリーターが終了すると親が変わる。
++	# getppid() は syscall 1 回なので毎フレームでも負担にならない。
++	if _orig_ppid is not None and os.getppid() != _orig_ppid:
++		exit(11)
++
+ 	# Form a string to let the user know we're real busy
+ 	ui_subtext = "Scanned " + str(valid_frames - dark_tries) + " frames"
+ 	if (dark_tries > 1):
+@@ -243,6 +459,10 @@ while True:
  			print(_("Average darkness: {avg}, Threshold: {threshold}").format(avg=str(dark_running_total / max(1, valid_frames)), threshold=str(dark_threshold)))
  			exit(13)
  		else:
@@ -119,7 +272,7 @@ index 929c127..8732d38 100644
  			exit(11)
  
  	# Grab a single frame of video
-@@ -333,6 +422,37 @@ while True:
+@@ -333,6 +553,37 @@ while True:
  
  			# Check if similarity exceeds our threshold
  			if similarity >= video_certainty:
@@ -157,3 +310,11 @@ index 929c127..8732d38 100644
  				timings["tt"] = time.time() - timings["st"]
  				timings["fl"] = time.time() - timings["fr"]
  
+@@ -395,6 +646,7 @@ while True:
+ 					})
+ 
+ 				# End peacefully
++				_mark_success()
+ 				exit(0)
+ 
+ 	if exposure != -1:
