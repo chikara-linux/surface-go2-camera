@@ -95,19 +95,36 @@ tps68470-irled — IR 発光体 (赤外線照明) を LED クラスデバイス�
     sudo cp -r dkms/tps68470-irled /usr/src/tps68470-irled-1.0
     sudo dkms add -m tps68470-irled -v 1.0
     sudo dkms install -m tps68470-irled -v 1.0
-    echo tps68470-irled | sudo tee /etc/modules-load.d/tps68470-irled.conf
     sudo cp face-auth/etc/99-tps68470-irled.rules /etc/udev/rules.d/
-    sudo udevadm control --reload
+    sudo udevadm control --reload-rules
     sudo modprobe tps68470-irled
 
-  udev ルールは brightness を video グループへ開放する。
-  画面ロッカーなど非特権プロセスから点灯するために必要。
-  開放するのは「明るさを変える」権限だけで、i2c 全体ではない。
+  udev ルールは2つのことをする。
+
+  (1) デバイスが用意できてからモジュールを読み込む。
+
+      **/etc/modules-load.d/ に置いてはいけない。** このモジュールは
+      int3472-tps68470 が i2c デバイスに結合して初めて動ける
+      (bus_find_device で探し、見つからなければ -ENODEV で抜ける)。
+      modules-load.d は起動の最初期に読み込むので、デバイスがまだ無く
+      必ず失敗する。カーネル更新後の再起動で実測:
+
+          23:24:24.824  tps68470-irled: TPS68470 が見つかりません
+          23:24:26.469  int3472-tps68470: TPS68470 REVID: 0x21  ← 1.6秒後
+
+      起動の順序を仮定せず、ACTION=="bind" で結合を待って読み込む。
+      修正後は正しい順序になった:
+
+          23:44:12.898  int3472-tps68470: TPS68470 REVID: 0x21
+          23:44:17.278  IR 照明を /sys/class/leds/... として登録しました
+
+  (2) brightness を video グループへ開放する。
+      画面ロッカーなど非特権プロセスから点灯するために必要。
+      開放するのは「明るさを変える」権限だけで、i2c 全体ではない。
 
 撤去:
     sudo dkms remove -m tps68470-irled -v 1.0 --all
-    sudo rm -f /etc/modules-load.d/tps68470-irled.conf \
-               /etc/udev/rules.d/99-tps68470-irled.rules
+    sudo rm -f /etc/udev/rules.d/99-tps68470-irled.rules
 
 センサーのストロボについて:
   linux-surface issue #739 は OV7251 のストロボレジスタを扱っており、

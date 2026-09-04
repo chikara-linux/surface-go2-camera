@@ -1,4 +1,22 @@
-# IR 発光体の明るさを video グループから変更できるようにする。
+# TPS68470 の IR 発光体まわりの udev ルール。
+
+# --- (1) デバイスが用意できてからモジュールを読み込む ---
+#
+# tps68470-irled は int3472-tps68470 が i2c デバイスに結合して初めて
+# 動ける（bus_find_device で探し、見つからなければ -ENODEV で抜ける）。
+#
+# /etc/modules-load.d/ に置くと起動の最初期に読み込まれてしまい、
+# デバイスがまだ無いので必ず失敗する。実測（カーネル更新後の再起動）:
+#
+#   23:24:24.824  tps68470-irled: TPS68470 が見つかりません
+#   23:24:26.469  int3472-tps68470: TPS68470 REVID: 0x21   ← 1.6 秒後
+#
+# 順序を仮定せず、結合イベントを待って読み込む。
+ACTION=="bind", SUBSYSTEM=="i2c", DRIVER=="int3472-tps68470", \
+  RUN+="/sbin/modprobe tps68470-irled"
+
+# --- (2) 明るさを video グループから変更できるようにする ---
+#
 # 画面ロッカーは非特権で動くため、これが無いと顔認証時に点灯できない。
 # 開放するのは brightness 1ファイルのみ（i2c 全体ではない）。
 ACTION=="add", SUBSYSTEM=="leds", KERNEL=="tps68470::ir_illuminator", \
