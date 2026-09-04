@@ -64,13 +64,16 @@ docs/                調査記録
 | [ir-camera](ir-camera) | IR カメラの読み出し層と、libcamera から見えない理由 |
 | [face-auth](face-auth) | 顔認証（Windows Hello 相当）の組み込み |
 
-赤外線照明は TPS68470 PMIC 内蔵のフラッシュ LED ドライバに繋がっているが、
-`include/linux/mfd/tps68470.h` に**フラッシュ制御ブロック (0x28-0x3A) が
-丸ごと欠落している**ため、Linux には点ける手段が無い。
-レジスタ手順は Windows ドライバの逆アセンブルから復元した。
+赤外線照明は TPS68470 PMIC 内蔵の **WLED（フラッシュ）出力**に繋がっている。
+レジスタは TI のデータシートで公開されており、ドライバ (`leds-tps68470.c`) も
+2023 年に書かれているが、**mainline に取り込まれていない**
+([LWN](https://lwn.net/Articles/926867/))。そのため
+`include/linux/mfd/tps68470.h` にも該当領域 (0x28-0x3A) の定義が無く、
+Linux には点ける手段が存在しない状態が続いている。
 
-`leds-tps68470` は 2023 年に上流へ投稿されているが議論が止まりマージされていない
-([LWN](https://lwn.net/Articles/926867/))。
+なお linux-surface の issue #739 はセンサー側のストロボを扱っているが、
+**そちらを追っても光らない**。詳細は
+[dkms/tps68470-irled/README.txt](dkms/tps68470-irled/README.txt)。
 
 ## 導入
 
