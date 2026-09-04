@@ -29,6 +29,7 @@ Boy-Howdy は dlib をやめて OpenCV 内蔵の DNN（YuNet 検出 + SFace 認�
 | `howdy-wake.py` | 画面点灯で認証を起こす常駐サービス |
 | `howdy-wake.service` | 上の systemd ユーザーユニット |
 | `impostor_test.py` | 他人受入率の測定 |
+| `check-install.sh` | 導入状態の点検（更新のあとに実行する） |
 
 リーダー本体は [../ir-camera/ipu3_ir_reader.py](../ir-camera/ipu3_ir_reader.py)。
 `howdy/src/recorders/` に置く。
@@ -293,6 +294,44 @@ systemd に引き取られ、判定そのものが外れる（実測で確認）
 `LockGrace`（既定5秒）には注意。ロック直後は操作するだけで認証なしに
 解除される。消灯とロックを揃えると「消えた直後に点けたら素通り」に
 なるので、気になるなら 0 にする。
+
+## システム更新との関係
+
+**この構成はパッケージ管理の外にある。** howdy は meson から直接
+インストールされており、`dpkg -S` でどのパッケージにも属さない。
+apt のリポジトリにも howdy は存在しない。したがって **Discover や
+apt が上書きすることは無い。**
+
+PAM 設定も安全側にある。最近の PAM はベンダー用とローカル用を分けており、
+
+    /usr/lib/pam.d/kde              ← パッケージが配布する（更新される）
+    /usr/lib/pam.d/kde-fingerprint  ← 同上
+    /etc/pam.d/kde-fingerprint      ← こちらが優先される。dpkg は書かない
+
+`/etc/pam.d/` にはパッケージが書き込まないので、構造的に保護されている。
+
+### 実際に壊れるのは DKMS 側
+
+カーネル更新では DKMS モジュールが再ビルドされる。ビルド自体は自動だが、
+**読み込みの順序で失敗しうる**（詳細は
+[../dkms/tps68470-irled/README.txt](../dkms/tps68470-irled/README.txt)）。
+症状は「認証は起動するが発光体が点かず失敗する」で分かりにくい。
+
+### 更新のあとは点検する
+
+```bash
+./check-install.sh
+```
+
+改変したファイルの一致、PAM、設定、DKMS、udev、常駐サービスをまとめて見る。
+問題があれば終了コード 1 と、戻すためのコマンドを出す。
+
+`/etc/pam.d/kde` に有効な `pam_howdy` の行が復活していないかも確認する。
+そこに置くと PIN と会話を奪い合い、**正しい PIN が「誤り」と判定されて
+GUI から出られなくなる**（三度そうなった）。
+
+boy-howdy のソースツリーが手元に無い場合、ファイル比較の項目は飛ばす。
+比較したいときは `REPO=/path/to/camera ./check-install.sh` とする。
 
 ## 他人受入率の測定
 
