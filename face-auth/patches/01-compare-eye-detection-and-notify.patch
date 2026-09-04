@@ -1,5 +1,5 @@
 diff --git a/howdy/src/compare.py b/howdy/src/compare.py
-index 929c127..9b4cc03 100644
+index 929c127..8732d38 100644
 --- a/howdy/src/compare.py
 +++ b/howdy/src/compare.py
 @@ -71,6 +71,82 @@ def init_detector(lock):
@@ -85,16 +85,18 @@ index 929c127..9b4cc03 100644
  def make_snapshot(type):
  	"""Generate snapshot after detection"""
  	snapshot.generate(snapframes, [
-@@ -121,6 +197,8 @@ frames = 0
+@@ -121,6 +197,10 @@ frames = 0
  snapframes = []
  # Tracks the best (highest) cosine similarity in the loop
  best_similarity = 0
 +# 顔は一致したが目が閉じていた、を記録する
 +eyes_closed_seen = False
++match_streak = 0          # 連続で一致したフレーム数
++last_match_frame = -2     # 直近で一致したフレーム番号
  # Face detection/recognition instances
  face_detector = None
  face_recognizer = None
-@@ -147,6 +225,10 @@ config.read(paths_factory.config_file_path())
+@@ -147,6 +227,11 @@ config.read(paths_factory.config_file_path())
  timeout = config.getint("video", "timeout", fallback=4)
  dark_threshold = config.getfloat("video", "dark_threshold", fallback=50.0)
  video_certainty = config.getfloat("video", "certainty", fallback=0.40)
@@ -102,10 +104,11 @@ index 929c127..9b4cc03 100644
 +# 区別できないため、網膜反射で開眼と注視を別途確認する。
 +require_open_eyes = config.getboolean("video", "require_open_eyes", fallback=True)
 +eye_threshold = config.getfloat("video", "eye_reflection_threshold", fallback=15.0)
++consecutive_required = max(1, config.getint("video", "consecutive_matches", fallback=3))
  detection_threshold = config.getfloat("video", "detection_threshold", fallback=0.9)
  end_report = config.getboolean("debug", "end_report", fallback=False)
  save_failed = config.getboolean("snapshots", "save_failed", fallback=False)
-@@ -243,6 +325,10 @@ while True:
+@@ -243,6 +328,10 @@ while True:
  			print(_("Average darkness: {avg}, Threshold: {threshold}").format(avg=str(dark_running_total / max(1, valid_frames)), threshold=str(dark_threshold)))
  			exit(13)
  		else:
@@ -116,7 +119,7 @@ index 929c127..9b4cc03 100644
  			exit(11)
  
  	# Grab a single frame of video
-@@ -333,6 +419,13 @@ while True:
+@@ -333,6 +422,37 @@ while True:
  
  			# Check if similarity exceeds our threshold
  			if similarity >= video_certainty:
@@ -127,6 +130,30 @@ index 929c127..9b4cc03 100644
 +					if refl < eye_threshold:
 +						eyes_closed_seen = True
 +						continue
++
++				# 連続して一致したフレームを要求する。
++				#
++				# 1 フレームでも通れば解除する方式は、実質「最大値を採る」処理に
++				# なる。timeout=5 では 1 回の試行で 80-250 フレームを評価するうえ、
++				# 試行回数の制限も無い（PAM に faillock 等が入っていない）。
++				# 閾値付近の他人にとっては、外れ値を引くまでくじを引き直せる。
++				#
++				# 連続性はフレーム番号で見る。黒フレーム・暗すぎ・顔なしで continue
++				# された回は番号が飛ぶので、判定を書き換えずに自然と途切れる。
++				# 同一フレームに複数の顔が写る場合に二重計上しないよう、既に数えた
++				# フレームかどうかを確認する。
++				#
++				# 本人は正面を向いていれば毎フレーム 0.85 前後を出すので、体感への
++				# 影響は数十 ms に留まる。
++				if last_match_frame != frames:
++					if frames == last_match_frame + 1:
++						match_streak += 1
++					else:
++						match_streak = 1
++					last_match_frame = frames
++				if match_streak < consecutive_required:
++					break
++
  				timings["tt"] = time.time() - timings["st"]
  				timings["fl"] = time.time() - timings["fr"]
  
