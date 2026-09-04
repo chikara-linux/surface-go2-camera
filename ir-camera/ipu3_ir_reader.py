@@ -55,6 +55,8 @@ V4L2_CTL = _tool("v4l2-ctl")
 # カーネル内で regmap のロックにより直列化されるので状態も壊れない。
 ILLUM_SYSFS = "/sys/class/leds/tps68470::ir_illuminator/brightness"
 ILLUM_MAX = 7
+SAT_ENGAGE = 0.08       # この飽和率を超えたら露出を落としにかかる
+SAT_RELEASE = 0.04      # ここまで下がるまで通常制御へ戻さない（発振防止）
 ILLUM_DEFAULT_CURRENT = 3
 
 
@@ -114,6 +116,7 @@ class IPU3IRReader:
 
         self.exp_cap = exp_cap      # 点灯時の露出上限（ブレ対策）
         self._settle = 0            # AE 変更後の反映待ちフレーム数
+        self._sat_guard = False     # 飽和ガードが噛んでいるか（ヒステリシス用）
         self.proc = None
         self.frames_read = 0
         self.last_mean = 0.0
@@ -327,8 +330,19 @@ class IPU3IRReader:
         # 被写体の動きがブレになる。光は発光体で足りるのでゲインで補う。
         exp_ceiling = self.exp_cap if (self.illuminated and self.exp_cap) else self.exp_max
         mean10 = max(mean10, 1.0)
-        # 飽和が進んだら測光値に関わらず落とす。白飛びは検出を殺す
-        if sat > 0.08:
+        # 飽和が進んだら測光値に関わらず落とす。白飛びは検出を殺す。
+        # 入り 8% / 抜け 4% のヒステリシスを持たせる。単一の閾値だと境界で
+        #   飽和 → 露出を下げる → 平均が目標を割る → ゲインを上げる → また飽和
+        # を繰り返して発振する。実測(近距離)ではゲインが 62↔72 を往復し、
+        # 類似度が 0.79↔0.87 で振れて、谷を拾うと本人でも閾値付近まで落ちた。
+        if sat > SAT_ENGAGE:
+            self._sat_guard = True
+        elif sat < SAT_RELEASE:
+            self._sat_guard = False
+
+        if self._sat_guard:
+            if sat <= SAT_ENGAGE:
+                return                       # 収まりつつある。抜けるまで触らない
             ratio = 0.75
         else:
             ratio = (self.target_lit if self.illuminated else self.target) / mean10
@@ -360,6 +374,7 @@ class IPU3IRReader:
         else:
             metric, sat = float(px.mean()), 0.0
         self.last_mean = metric
+        self.last_sat = sat         # AE が実際に見た飽和率。診断用
         self.frames_read += 1
         self._auto_expose(metric, sat)
 
