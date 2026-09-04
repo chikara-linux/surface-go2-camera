@@ -1,0 +1,132 @@
+diff --git a/howdy/src/compare.py b/howdy/src/compare.py
+index 929c127..9b4cc03 100644
+--- a/howdy/src/compare.py
++++ b/howdy/src/compare.py
+@@ -71,6 +71,82 @@ def init_detector(lock):
+ 	lock.release()
+ 
+ 
++def eye_reflection(gray, face):
++	"""網膜反射の強さを両目について返す。
++
++	赤外線が瞳孔から入って網膜で反射しカメラへ戻る（bright pupil effect）。
++	発光体がカメラと同軸にあるため明瞭に出る。目が開いていて、かつカメラを
++	見ているときにだけ現れる。
++
++	実測（Surface Go 2 / OV7251 + TPS68470 発光体）:
++	  目を開けて注視  弱い方の目 21〜35
++	  目を閉じる      0（全フレーム）
++	  目を細める      0（全フレーム）
++	  視線を外す      平均6（15超は11%）
++	一致度だけでは 0.77〜0.91 と重なって区別できないが、この指標は完全に分離する。
++
++	顔が明るく照らされるため顔領域は容易に飽和する。全体を基準にすると
++	差が消えるので、目のパッチ内の局所コントラスト（最大値 - 中央値）で見る。
++	"""
++	x, y, w, h = (int(v) for v in face[:4])
++	lm = np.asarray(face[4:14], dtype=np.float32).reshape(5, 2)
++	H, W = gray.shape[:2]
++	r = max(3, int(w * 0.05))
++	out = []
++	for i in (0, 1):
++		cx, cy = int(lm[i][0]), int(lm[i][1])
++		patch = gray[max(0, cy - r):min(H, cy + r + 1),
++		             max(0, cx - r):min(W, cx + r + 1)]
++		out.append(float(patch.max()) - float(np.median(patch)) if patch.size else 0.0)
++	# 弱い方を採る。片目だけ開いていても通さない
++	return min(out)
++
++
++def notify_eyes_closed():
++	try:
++		env = dict(os.environ)
++		env.setdefault("DBUS_SESSION_BUS_ADDRESS",
++			"unix:path=/run/user/%d/bus" % os.getuid())
++		subprocess.Popen([
++			"/usr/bin/notify-send", "-a", "\u9854\u8a8d\u8a3c",
++			"-i", "face-smile", "-t", "5000",
++			"\u30ab\u30e1\u30e9\u3092\u898b\u3066\u304f\u3060\u3055\u3044",
++			"\u76ee\u3092\u958b\u3051\u3066\u6b63\u9762\u3092\u5411\u3044\u3066\u304f\u3060\u3055\u3044",
++		], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
++	except Exception:
++		pass
++
++
++def notify_no_match(best, threshold):
++	"""顔は検出したが一致しなかったときだけ通知する。
++
++	一致度の数値は通知に出さない。出すと、顔の似た他人が繰り返し試して
++	「あとどれだけ足りないか」を知る手がかりになる（オラクルになる）。
++
++	best_similarity は「顔を検出して照合した」ときにのみ更新されるため、
++	0 のままなら顔が見つからなかったということ。その場合は通知しない
++	（最初から PIN で解除するつもりのときに通知が出るのを避ける）。
++
++	PAM 経由では環境変数が絞られるので、セッションバスの位置を明示する。
++	"""
++	if not best:
++		return
++	try:
++		env = dict(os.environ)
++		env.setdefault("DBUS_SESSION_BUS_ADDRESS",
++			"unix:path=/run/user/%d/bus" % os.getuid())
++		subprocess.Popen([
++			"/usr/bin/notify-send",
++			"-a", "\u9854\u8a8d\u8a3c",
++			"-i", "face-smile",
++			"-t", "5000",
++			"\u9854\u3092\u8a8d\u8b58\u3067\u304d\u307e\u305b\u3093\u3067\u3057\u305f",
++			"PIN \u3067\u89e3\u9664\u3057\u3066\u304f\u3060\u3055\u3044",
++		], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
++	except Exception:
++		pass
++
++
+ def make_snapshot(type):
+ 	"""Generate snapshot after detection"""
+ 	snapshot.generate(snapframes, [
+@@ -121,6 +197,8 @@ frames = 0
+ snapframes = []
+ # Tracks the best (highest) cosine similarity in the loop
+ best_similarity = 0
++# 顔は一致したが目が閉じていた、を記録する
++eyes_closed_seen = False
+ # Face detection/recognition instances
+ face_detector = None
+ face_recognizer = None
+@@ -147,6 +225,10 @@ config.read(paths_factory.config_file_path())
+ timeout = config.getint("video", "timeout", fallback=4)
+ dark_threshold = config.getfloat("video", "dark_threshold", fallback=50.0)
+ video_certainty = config.getfloat("video", "certainty", fallback=0.40)
++# 開眼・注視の要求。顔認証は「本人が寝ているか起きているか」を原理的に
++# 区別できないため、網膜反射で開眼と注視を別途確認する。
++require_open_eyes = config.getboolean("video", "require_open_eyes", fallback=True)
++eye_threshold = config.getfloat("video", "eye_reflection_threshold", fallback=15.0)
+ detection_threshold = config.getfloat("video", "detection_threshold", fallback=0.9)
+ end_report = config.getboolean("debug", "end_report", fallback=False)
+ save_failed = config.getboolean("snapshots", "save_failed", fallback=False)
+@@ -243,6 +325,10 @@ while True:
+ 			print(_("Average darkness: {avg}, Threshold: {threshold}").format(avg=str(dark_running_total / max(1, valid_frames)), threshold=str(dark_threshold)))
+ 			exit(13)
+ 		else:
++			if eyes_closed_seen:
++				notify_eyes_closed()
++			else:
++				notify_no_match(best_similarity, video_certainty)
+ 			exit(11)
+ 
+ 	# Grab a single frame of video
+@@ -333,6 +419,13 @@ while True:
+ 
+ 			# Check if similarity exceeds our threshold
+ 			if similarity >= video_certainty:
++				# 顔が一致しても、目が閉じていれば解除しない。
++				# 就寝中に端末を顔へ向けられる攻撃を防ぐ。
++				if require_open_eyes:
++					refl = eye_reflection(gsframe, face)
++					if refl < eye_threshold:
++						eyes_closed_seen = True
++						continue
+ 				timings["tt"] = time.time() - timings["st"]
+ 				timings["fl"] = time.time() - timings["fr"]
+ 

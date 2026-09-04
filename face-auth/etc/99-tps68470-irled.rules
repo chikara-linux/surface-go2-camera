@@ -1,0 +1,6 @@
+# IR 発光体の明るさを video グループから変更できるようにする。
+# 画面ロッカーは非特権で動くため、これが無いと顔認証時に点灯できない。
+# 開放するのは brightness 1ファイルのみ（i2c 全体ではない）。
+ACTION=="add", SUBSYSTEM=="leds", KERNEL=="tps68470::ir_illuminator", \
+  RUN+="/bin/chgrp video /sys%p/brightness", \
+  RUN+="/bin/chmod g+w /sys%p/brightness"

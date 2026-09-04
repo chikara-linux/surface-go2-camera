@@ -1,0 +1,6 @@
+# 顔認証 (Boy-Howdy) を Plasma の「非対話型認証器」の枠で動かす。
+# PIN 入力の経路 (/etc/pam.d/kde) とは別ハンドルなので会話が衝突しない。
+# 注意: [success=end ...] は不正な記法。PAM の動作に "end" は存在しない。
+auth       sufficient   pam_howdy.so
+auth       required     pam_deny.so
+account    required     pam_permit.so

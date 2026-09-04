@@ -4,6 +4,24 @@
 *.jpeg
 *.bin
 *.raw
+*.pgm
+*.npy
+*.npz
+
+# 生体データ（顔の特徴量・登録モデル）
+*.dat
+models/
+
+# 他社の proprietary バイナリ（解析はしても再配布しない）
+*.sys
+*.dll
+*.msi
+
+# ファームウェアの完全ダンプ
+# MSDM は OEM Windows のプロダクトキーを保持する。DSDT も端末固有情報を含む
+*.aml
+*.dsl
+acpi/
 
 # ビルド生成物
 *.ko
@@ -16,3 +34,4 @@
 Module.symvers
 modules.order
 __pycache__/
+build/

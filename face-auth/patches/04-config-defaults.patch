@@ -1,0 +1,44 @@
+diff --git a/howdy/src/config.ini b/howdy/src/config.ini
+index ac68b64..b3072fb 100644
+--- a/howdy/src/config.ini
++++ b/howdy/src/config.ini
+@@ -48,25 +48,25 @@ workaround = off
+ #   0.38 = Balanced (good accuracy with reasonable speed)
+ #   0.45 = Secure (very strict, may require better lighting/positioning)
+ # Default 0.40 is conservative — prioritizes security over convenience
+-certainty = 0.40
++certainty = 0.45
+ 
+ # Minimum detection confidence for the face detector (0.0 to 1.0)
+ # Higher values reduce false detections but may miss faces at odd angles
+-detection_threshold = 0.9
++detection_threshold = 0.7
+ 
+ # The number of seconds to search before timing out
+-timeout = 4
++timeout = 6
+ 
+ # The path of the device to capture frames from
+ # Video devices are usually found in /dev/v4l/by-path/
+-device_path = none
++device_path = /dev/video2
+ 
+ # Print a warning if the the video device is not found
+ warn_no_device = true
+ 
+ # Scale down the video feed to this maximum height
+ # Speeds up face recognition but can make it less precise
+-max_height = 320
++max_height = 480
+ 
+ # Set the camera input profile to this width and height
+ # The largest profile will be used if set to -1
+@@ -82,7 +82,7 @@ dark_threshold = 60
+ 
+ # The recorder to use. Can be either opencv (default), ffmpeg or pyv4l2.
+ # Switching from the default opencv to ffmpeg can help with grayscale issues.
+-recording_plugin = opencv
++recording_plugin = ipu3_ir
+ 
+ # Video format used by ffmpeg. Options include vfwcap or v4l2.
+ # FFMPEG only.

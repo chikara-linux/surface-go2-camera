@@ -1,0 +1,26 @@
+diff --git a/howdy/src/meson.build b/howdy/src/meson.build
+index d9e72ae..4c01d4b 100644
+--- a/howdy/src/meson.build
++++ b/howdy/src/meson.build
+@@ -37,6 +37,7 @@ py_sources = [
+     'paths_factory.py',
+     'recorders/__init__.py',
+     'recorders/ffmpeg_reader.py',
++    'recorders/ipu3_ir_reader.py',
+     'recorders/pyv4l2_reader.py',
+     'recorders/v4l2.py',
+     'recorders/video_capture.py',
+diff --git a/meson.build b/meson.build
+index 70e4e80..da8aac0 100644
+--- a/meson.build
++++ b/meson.build
+@@ -17,5 +17,7 @@ paths_dict = {
+ }
+ 
+ # We need to keep this order beause howdy-gtk defines the gtk script path which is used later in howdy
+-subdir('howdy-gtk')
++# howdy-gtk は GTK 版の登録/通知 UI。KDE (Plasma Mobile) では使わないうえ
++# python3-dev を要求するため、ビルド対象から外している。CLI の動作には影響しない。
++# subdir('howdy-gtk')
+ subdir('howdy')
+\ No newline at end of file

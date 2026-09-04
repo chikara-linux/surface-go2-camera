@@ -1,0 +1,33 @@
+diff --git a/howdy/src/recorders/video_capture.py b/howdy/src/recorders/video_capture.py
+index 15888a5..30b0d62 100644
+--- a/howdy/src/recorders/video_capture.py
++++ b/howdy/src/recorders/video_capture.py
+@@ -32,7 +32,9 @@ class VideoCapture:
+ 			self.config = config
+ 
+ 		# Check device path
+-		if not os.path.exists(self.config.get("video", "device_path")):
++		# ipu3_ir はトポロジから video ノードを自動検出するので device_path を使わない
++		if (self.config.get("video", "recording_plugin", fallback="opencv") != "ipu3_ir"
++				and not os.path.exists(self.config.get("video", "device_path"))):
+ 			if self.config.getboolean("video", "warn_no_device", fallback=True):
+ 				print(_("Howdy could not find a camera device at the path specified in the config file."))
+ 				print(_("It is very likely that the path is not configured correctly, please edit the 'device_path' config value by running:"))
+@@ -110,6 +112,17 @@ class VideoCapture:
+ 				self.config.get("video", "device_format", fallback="v4l2")
+ 			)
+ 
++		elif recording_plugin == "ipu3_ir":
++			# Intel IPU3 経由の IR カメラ (OV7251)。libcamera からは見えないため
++			# V4L2 を直接読み、ip3y の展開・自動露出・ノイズ低減をリーダー側で行う。
++			from recorders.ipu3_ir_reader import IPU3IRReader
++			self.internal = IPU3IRReader(
++				sensor=self.config.get("video", "ipu3_ir_sensor", fallback="ov7251"),
++				width=self.config.getint("video", "ipu3_ir_width", fallback=640),
++				height=self.config.getint("video", "ipu3_ir_height", fallback=480),
++				stack=self.config.getint("video", "ipu3_ir_stack", fallback=12),
++			)
++
+ 		elif recording_plugin == "pyv4l2":
+ 			# Set the capture source for pyv4l2
+ 			from recorders.pyv4l2_reader import pyv4l2_reader
