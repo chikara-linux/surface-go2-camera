@@ -304,7 +304,11 @@ class IPU3IRReader:
         """
         h, w = px.shape
         cen = px[int(0.20 * h):int(0.80 * h), int(0.25 * w):int(0.75 * w)]
-        sat = float((px >= 1000).mean())
+        # 飽和率も中央領域で測る。フレーム全体で割ると、発光体で背景が真っ黒に
+        # なるぶん飽和率が薄まり、顔が白飛びしていてもガードが発動しない。
+        # 実測(近距離): 顔の32%が飽和していても全体基準では6.4%で閾値8%を下回り、
+        # AE が不感帯に落ちて 20 フレーム全く動かなかった。中央基準なら 21%。
+        sat = float((cen >= 1000).mean())
         return float(cen.mean()), sat
 
     def _auto_expose(self, mean10, sat=0.0):
