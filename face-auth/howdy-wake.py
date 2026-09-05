@@ -61,8 +61,29 @@ EV_SYN, EV_KEY, SYN_REPORT = 0, 1, 0
 KEY_ENTER = 28
 
 
+INJECT_MARK = "/run/user/%d/howdy-wake-injected" % os.getuid()
+
+
 def log(msg):
     print(msg, flush=True)
+
+
+def _mark_injected():
+    """Enter を送った時刻を残す。
+
+    空 PIN の送信は対話型の認証を 1 回失敗させ、kscreenlocker はその後
+    約 2.3 秒（実測 2236-2343ms）のあいだ認証を受け付けなくなる。
+    顔認証の成功がこの窓に落ちると解除できず、グリーターが終了も解錠も
+    できない状態になる（KDE Bug 515299）。
+
+    compare.py はこの印を見て、注入があったときだけ成功の報告を遅らせる。
+    サスペンド復帰の経路には注入も失敗遅延も無いので、そちらは待たせない。
+    """
+    try:
+        with open(INJECT_MARK, "w") as f:
+            f.write(str(time.time()))
+    except Exception:
+        pass
 
 
 def display_on():
@@ -178,6 +199,7 @@ def main():
         log("画面が点灯（消灯 %.1f 秒）。ロック中なので認証を起こします" % off_for)
         try:
             send_enter()
+            _mark_injected()
         except Exception as err:
             log("注入に失敗: %s" % err)
 

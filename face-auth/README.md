@@ -28,6 +28,8 @@ Boy-Howdy は dlib をやめて OpenCV 内蔵の DNN（YuNet 検出 + SFace 認�
 | `etc/99-tps68470-irled.rules` | 発光体の権限 |
 | `howdy-wake.py` | 画面点灯で認証を起こす常駐サービス |
 | `howdy-wake.service` | 上の systemd ユーザーユニット |
+| `lockscreen-restart.sh` | 固まったロック画面の復旧スイッチ |
+| `quicksetting/` | 上を呼ぶクイック設定タイル（Plasma Mobile） |
 | `impostor_test.py` | 他人受入率の測定 |
 | `check-install.sh` | 導入状態の点検（更新のあとに実行する） |
 
@@ -274,6 +276,81 @@ systemd に引き取られ、判定そのものが外れる（実測で確認）
 
 いずれのガードも CLI 実行（`howdy test` など）には影響しない。
 親がグリーターでない場合は素通りする。
+
+### 危険: 成功が失敗遅延の窓に落ちると解錠できなくなる
+
+**これが原因で一度、強制再起動が必要な状態になった（2026-09-05）。**
+
+kscreenlocker は認証が失敗すると「次に認証を受け付ける時刻」を記録し、
+それ以前に届いた認証を**黙って破棄する**（[KDE Bug 515299](https://bugs.kde.org/show_bug.cgi?id=515299)）。
+
+```cpp
+// greeter/pamauthenticator.cpp
+void PamWorker::startFailedDelay(uint useconds) {
+    m_nextAttemptAllowedTime = now() + microseconds(useconds);
+}
+void PamWorker::authenticate() {
+    if (m_inAuthenticate || m_unavailable) return;
+    else if (now() < m_nextAttemptAllowedTime) {
+        qCCritical(... "Authentication attempt too soon. This shouldn't happen!");
+        return;                       // 早期リターン
+    }
+```
+
+Enter の注入は空 PIN の送信なので、対話型の認証が必ず 1 回失敗する。
+**顔認証の成功がこの窓に落ちると解除されず、グリーターは「成功した」と
+信じて終了しようとするが拒否され、操作も終了もできなくなる。**
+
+    09:39:44.014  pam_unix(kde:auth) 失敗 → 失敗遅延が始まる
+    09:39:46.285  Login approved（2.271 秒後）
+    09:39:46.327  [PAM worker kde] Authentication attempt too soon
+    09:39:46.339  Greeter tried to quit without being unlocked
+    （以降 8 分間操作を受け付けず、強制再起動）
+
+`kde` サービスの失敗遅延を実測すると **2236 / 2240 / 2334 / 2338 / 2343 ms**。
+事故時の 2.271 秒はこの範囲のど真ん中だった。無事だった 20 件以上は
+すべて 3.945 秒以降で、通常は 1 回目が失敗して `graceLockTimer` の 3 秒後に
+成功するため約 4.2 秒かかる。**顔認証が速く成功するほど危ない。**
+
+#### 対処: 注入があったときだけ成功の報告を遅らせる
+
+`howdy-wake` は Enter を送った時刻を `/run/user/UID/howdy-wake-injected` に
+残す。`compare.py` はこれが 15 秒以内のときだけ、起動から
+`MIN_SUCCESS_DELAY`（3.5 秒）経つまで成功を報告しない。
+
+    起動から 3.5 秒 → 対話型失敗からは 3.37 秒（起動は失敗の 0.13 秒前）
+    実測上限 2.343 秒に対する余裕 +1.03 秒
+    理論上限 2.5 秒に対する余裕   +0.87 秒
+
+**普段の解除は遅くならない。** 通常は既に 4.2 秒かかっているため。
+**サスペンド復帰も遅くならない。** 注入も失敗遅延も無いので印が付かない。
+
+#### 復旧: クイック設定のタイル
+
+固まっても、上からスワイプするクイックメニューは操作できた。そこから
+グリーターを再起動するタイルを置く。`quicksetting/` と
+`lockscreen-restart.sh`。
+
+```bash
+sudo install -m 755 lockscreen-restart.sh /usr/local/bin/lockscreen-restart
+mkdir -p ~/.local/share/plasma/quicksettings/org.kde.plasma.quicksetting.lockerrestart
+cp -r quicksetting/* ~/.local/share/plasma/quicksettings/org.kde.plasma.quicksetting.lockerrestart/
+kwriteconfig6 --file plasmamobilerc --group QuickSettings --key enabledQuickSettings \
+  "$(kreadconfig6 --file plasmamobilerc --group QuickSettings --key enabledQuickSettings),org.kde.plasma.quicksetting.lockerrestart"
+```
+
+**plasmashell を再起動してはいけない。** 設定は監視されており自動で反映される。
+再起動を挟んだところ、終了処理中に plasmashell が SIGSEGV で落ちた。
+
+**1 ロックにつき 1 回だけ許可する。** kscreenlocker は異常終了を 3 回までしか
+許容せず、4 回目で TTY からしか復帰できなくなる。カウンタは解錠でしか
+戻らない。同一ロックかどうかは `GetActiveTime`（ロックからの経過秒）を
+現在時刻から引いた開始時刻で判定する。グリーターを作り直しても継続する値なので、
+再起動を挟んでも同じロックだと分かる。2 回目は警告だけ出して強制再起動を促す。
+
+⚠️ **スクリプトで `LC_ALL=C` を使ってはいけない。** 日本語を渡した
+`notify-send` が `Invalid byte sequence in conversion input` で失敗し、
+警告が一切出なくなる。`C.UTF-8` を使う。
 
 ### 既知の理論上の隙間（未対処）
 

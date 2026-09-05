@@ -1,5 +1,5 @@
 diff --git a/howdy/src/compare.py b/howdy/src/compare.py
-index 929c127..6518401 100644
+index 929c127..9ed1b92 100644
 --- a/howdy/src/compare.py
 +++ b/howdy/src/compare.py
 @@ -12,7 +12,21 @@ timings = {
@@ -24,7 +24,7 @@ index 929c127..6518401 100644
  import configparser
  import cv2
  from datetime import timezone, datetime
-@@ -71,6 +85,176 @@ def init_detector(lock):
+@@ -71,6 +85,212 @@ def init_detector(lock):
  	lock.release()
  
  
@@ -33,6 +33,42 @@ index 929c127..6518401 100644
 +# 起動していたので、5 秒あれば十分に捉えられる。長くすると「解除してすぐ
 +# ロックし、また顔で解除したい」場面で待たされるので、余裕を見つつ短くする。
 +SUCCESS_COOLDOWN = 5.0
++
++# 成功を報告するまでに、起動から最低これだけ空ける（秒）。
++#
++# kscreenlocker は認証が失敗すると「次に認証を受け付ける時刻」を記録し、
++# それ以前に届いた認証を**黙って破棄する**（KDE Bug 515299）:
++#
++#   else if (std::chrono::steady_clock::now() < m_nextAttemptAllowedTime) {
++#     qCCritical(... "Authentication attempt too soon. This shouldn't happen!");
++#     return;
++#   }
++#
++# ロック画面へ Enter を送って認証を起こす方式では、空 PIN の送信で対話型が
++# 必ず 1 回失敗する。顔認証の成功がこの窓に落ちると成功が捨てられ、
++# グリーターは「成功した」と信じて終了しようとするが解錠されず、
++# 操作も終了もできない状態になる（2026-09-05 に発生。強制再起動を要した）。
++#
++# PAM の失敗遅延は既定 2 秒 + 最大 25% のばらつきで最大 2.5 秒。実測では
++#   安全だった成功  3.945 〜 24.115 秒後（20 件以上）
++#   事故の成功      2.271 秒後
++# 通常は 1 回目が失敗し graceLockTimer の 3 秒後に成功するので約 4.2 秒かかる。
++# つまりこの待ちが効くのは「1 回目がそのまま成功した」ときだけで、
++# それがまさに危険なケース。普段の解除は 1 秒も遅くならない。
++MIN_SUCCESS_DELAY = 3.5
++INJECT_MARK = "/run/user/%d/howdy-wake-injected" % os.getuid()
++
++
++def _enter_was_injected():
++	"""直前に howdy-wake が Enter を注入したか。
++
++	注入があったときだけ対話型の失敗遅延が存在する。サスペンド復帰の経路には
++	注入も失敗遅延も無いので、そちらまで待たせないための判定。
++	"""
++	try:
++		return time.time() - float(open(INJECT_MARK).read()) < 15.0
++	except Exception:
++		return False
 +
 +
 +def _mark_success():
@@ -201,7 +237,7 @@ index 929c127..6518401 100644
  def make_snapshot(type):
  	"""Generate snapshot after detection"""
  	snapshot.generate(snapframes, [
-@@ -121,6 +305,11 @@ frames = 0
+@@ -121,6 +341,11 @@ frames = 0
  snapframes = []
  # Tracks the best (highest) cosine similarity in the loop
  best_similarity = 0
@@ -213,7 +249,7 @@ index 929c127..6518401 100644
  # Face detection/recognition instances
  face_detector = None
  face_recognizer = None
-@@ -147,6 +336,11 @@ config.read(paths_factory.config_file_path())
+@@ -147,6 +372,11 @@ config.read(paths_factory.config_file_path())
  timeout = config.getint("video", "timeout", fallback=4)
  dark_threshold = config.getfloat("video", "dark_threshold", fallback=50.0)
  video_certainty = config.getfloat("video", "certainty", fallback=0.40)
@@ -225,7 +261,7 @@ index 929c127..6518401 100644
  detection_threshold = config.getfloat("video", "detection_threshold", fallback=0.9)
  end_report = config.getboolean("debug", "end_report", fallback=False)
  save_failed = config.getboolean("snapshots", "save_failed", fallback=False)
-@@ -178,6 +372,23 @@ lock = threading.Lock()
+@@ -178,6 +408,23 @@ lock = threading.Lock()
  lock.acquire()
  threading.Thread(target=init_detector, args=(lock,), daemon=True).start()
  
@@ -249,7 +285,7 @@ index 929c127..6518401 100644
  # Start video capture on the IR camera
  timings["ic"] = time.time()
  
-@@ -225,6 +436,11 @@ while True:
+@@ -225,6 +472,11 @@ while True:
  	# Increment the frame count every loop
  	frames += 1
  
@@ -261,7 +297,7 @@ index 929c127..6518401 100644
  	# Form a string to let the user know we're real busy
  	ui_subtext = "Scanned " + str(valid_frames - dark_tries) + " frames"
  	if (dark_tries > 1):
-@@ -243,6 +459,10 @@ while True:
+@@ -243,6 +495,10 @@ while True:
  			print(_("Average darkness: {avg}, Threshold: {threshold}").format(avg=str(dark_running_total / max(1, valid_frames)), threshold=str(dark_threshold)))
  			exit(13)
  		else:
@@ -272,7 +308,7 @@ index 929c127..6518401 100644
  			exit(11)
  
  	# Grab a single frame of video
-@@ -333,6 +553,37 @@ while True:
+@@ -333,6 +589,37 @@ while True:
  
  			# Check if similarity exceeds our threshold
  			if similarity >= video_certainty:
@@ -310,10 +346,16 @@ index 929c127..6518401 100644
  				timings["tt"] = time.time() - timings["st"]
  				timings["fl"] = time.time() - timings["fr"]
  
-@@ -395,6 +646,7 @@ while True:
+@@ -395,6 +682,13 @@ while True:
  					})
  
  				# End peacefully
++				# 失敗遅延の窓を越えるまで待ってから成功を返す。上の定数の説明を参照。
++				if _parent_is_greeter() and _enter_was_injected():
++					_wait = MIN_SUCCESS_DELAY - (time.time() - timings["st"])
++					if _wait > 0:
++						video_capture.release()   # 待つ間カメラと発光体を離す
++						time.sleep(_wait)
 +				_mark_success()
  				exit(0)
  

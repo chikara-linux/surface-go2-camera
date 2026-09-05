@@ -1,0 +1,12 @@
+{
+    "KPackageStructure": "KPackage/GenericQML",
+    "KPlugin": {
+        "Id": "org.kde.plasma.quicksetting.lockerrestart",
+        "Name": "Restart Lock Screen",
+        "Name[ja]": "ロック画面の再起動",
+        "Description": "Recover a stuck lock screen (once per lock)",
+        "Description[ja]": "固まったロック画面を復旧する（1ロックにつき1回）",
+        "Icon": "system-lock-screen",
+        "License": "GPL"
+    }
+}
