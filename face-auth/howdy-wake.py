@@ -62,6 +62,32 @@ KEY_ENTER = 28
 
 
 INJECT_MARK = "/run/user/%d/howdy-wake-injected" % os.getuid()
+RESUME_MARK = "/run/howdy-resume-timestamp"
+RESUME_GRACE = 30.0        # 復帰からこの秒数は注入しない
+
+
+def _just_resumed():
+    """サスペンドから復帰した直後か。
+
+    復帰の経路では、こちらが何もしなくても認証が始まる（pam_howdy が
+    "System resumed from suspend" を出す経路）。そこへ Enter を注入すると
+    対話型の認証が余計に 1 回失敗し、認証が二重に走る。
+
+    実測（2026-09-06 の事故）:
+        07:49:17.724  PM: suspend exit
+        07:49:18.336  System resumed... waiting 2s   ← 自力で開始している
+        07:49:20.261  howdy-wake が発火              ← 不要な注入
+        07:49:22-26   1 回目の点灯
+        07:49:29.299  Login approved
+        07:49:30-31   2 回目の点灯（グリーターは既に消滅）
+
+    印は systemd-sleep のフックが復帰時に書く（pam_howdy の resume_delay と
+    同じもの）。
+    """
+    try:
+        return time.time() - float(open(RESUME_MARK).read().strip()) < RESUME_GRACE
+    except Exception:
+        return False
 
 
 def log(msg):
@@ -194,6 +220,11 @@ def main():
             continue
         locked = is_locked()
         if locked is not True:
+            continue
+        if _just_resumed():
+            log("画面が点灯（消灯 %.1f 秒）。ただし復帰直後なので注入しない"
+                % off_for)
+            last_fire = time.time()
             continue
         last_fire = time.time()
         log("画面が点灯（消灯 %.1f 秒）。ロック中なので認証を起こします" % off_for)

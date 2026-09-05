@@ -1,0 +1,23 @@
+[Unit]
+# 発光体が点いた瞬間を記録し続ける。再現待ちのための常時観測。
+# 詳細は irwatch.py の冒頭を参照。
+Description=Record IR illuminator activations for diagnosis
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/irwatch
+Restart=on-failure
+RestartSec=10
+
+# 読むだけ。外部プロセスも起動しない。
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=%h/.local/state
+RestrictAddressFamilies=
+MemoryMax=32M
+CPUQuota=5%
+
+[Install]
+WantedBy=graphical-session.target

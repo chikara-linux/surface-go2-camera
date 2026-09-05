@@ -1,30 +1,39 @@
 diff --git a/howdy/src/compare.py b/howdy/src/compare.py
-index 929c127..9ed1b92 100644
+index 929c127..353df25 100644
 --- a/howdy/src/compare.py
 +++ b/howdy/src/compare.py
-@@ -12,7 +12,21 @@ timings = {
+@@ -12,7 +12,30 @@ timings = {
  # Import required modules
  import sys
  import os
 +
-+# 親プロセスをここで固定する。cv2/numpy の読み込みだけで数百ms かかり、
-+# その間にグリーターが Qt.quit() で終了して systemd --user に引き取られる
-+# ことがある。後方の _parent_is_greeter() が生きた os.getppid() を見ると、
-+# この一瞬の間に判定が変わってしまう（実際に観測した:
-+# 認証成功で greeter が終了 → 0.9 秒後には親が systemd --user になっていた）。
-+_STARTUP_PPID = os.getppid()
++# PAM から起動されたかを、環境変数で判定する。
++#
++# 以前は親プロセスの名前で判定していたが、これは競合する。グリーターは
++# 認証が成功すると Qt.quit() で終了するため、こちらの Python が起動して
++# いる最中（cv2/numpy の読み込みだけで数百ms）に親が消え、systemd に
++# 引き取られる。ファイルの先頭で固定しても、インタプリタの起動中に親が
++# 死ねば手遅れになる。実測（2026-09-06）:
++#
++#     07:49:29.299  Login approved（1 回目が成功）
++#     07:49:30.242  2 回目が点灯。このときグリーターは既に消滅
++#
++# このとき判定が False になり、**ガードが 3 つとも素通りした**。
++#
++# pam_howdy は子に PYTHONPATH と PATH だけを渡す（main.cc の envp）。
++# HOME が無いことは exec の時点で決まり、あとから変わらない。
 +try:
-+	_STARTUP_PARENT_IS_GREETER = open(
-+		"/proc/%d/comm" % _STARTUP_PPID).read().startswith("kscreenlocker")
++	_STARTUP_PPID = os.getppid()
 +except Exception:
-+	_STARTUP_PARENT_IS_GREETER = False
++	_STARTUP_PPID = None
++_LAUNCHED_BY_PAM = "HOME" not in os.environ
 +
  import json
 +import fcntl
  import configparser
  import cv2
  from datetime import timezone, datetime
-@@ -71,6 +85,212 @@ def init_detector(lock):
+@@ -71,6 +94,212 @@ def init_detector(lock):
  	lock.release()
  
  
@@ -132,12 +141,12 @@ index 929c127..9ed1b92 100644
 +
 +
 +def _parent_is_greeter():
-+	"""親がロック画面のグリーターか。comm は15文字で切れる点に注意。
++	"""PAM（ロック画面）から起動されたか。
 +
-+	起動直後に固定した _STARTUP_PARENT_IS_GREETER を返す。生きた
-+	os.getppid() を見てはいけない（上のコメント参照）。
++	名前は経緯の都合で残しているが、実際に見ているのは環境変数。
++	親プロセスの生死に左右されない（上のコメント参照）。
 +	"""
-+	return _STARTUP_PARENT_IS_GREETER
++	return _LAUNCHED_BY_PAM
 +
 +
 +def _session_locked():
@@ -237,7 +246,7 @@ index 929c127..9ed1b92 100644
  def make_snapshot(type):
  	"""Generate snapshot after detection"""
  	snapshot.generate(snapframes, [
-@@ -121,6 +341,11 @@ frames = 0
+@@ -121,6 +350,11 @@ frames = 0
  snapframes = []
  # Tracks the best (highest) cosine similarity in the loop
  best_similarity = 0
@@ -249,7 +258,7 @@ index 929c127..9ed1b92 100644
  # Face detection/recognition instances
  face_detector = None
  face_recognizer = None
-@@ -147,6 +372,11 @@ config.read(paths_factory.config_file_path())
+@@ -147,6 +381,11 @@ config.read(paths_factory.config_file_path())
  timeout = config.getint("video", "timeout", fallback=4)
  dark_threshold = config.getfloat("video", "dark_threshold", fallback=50.0)
  video_certainty = config.getfloat("video", "certainty", fallback=0.40)
@@ -261,7 +270,7 @@ index 929c127..9ed1b92 100644
  detection_threshold = config.getfloat("video", "detection_threshold", fallback=0.9)
  end_report = config.getboolean("debug", "end_report", fallback=False)
  save_failed = config.getboolean("snapshots", "save_failed", fallback=False)
-@@ -178,6 +408,23 @@ lock = threading.Lock()
+@@ -178,6 +417,23 @@ lock = threading.Lock()
  lock.acquire()
  threading.Thread(target=init_detector, args=(lock,), daemon=True).start()
  
@@ -285,7 +294,7 @@ index 929c127..9ed1b92 100644
  # Start video capture on the IR camera
  timings["ic"] = time.time()
  
-@@ -225,6 +472,11 @@ while True:
+@@ -225,6 +481,11 @@ while True:
  	# Increment the frame count every loop
  	frames += 1
  
@@ -297,7 +306,7 @@ index 929c127..9ed1b92 100644
  	# Form a string to let the user know we're real busy
  	ui_subtext = "Scanned " + str(valid_frames - dark_tries) + " frames"
  	if (dark_tries > 1):
-@@ -243,6 +495,10 @@ while True:
+@@ -243,6 +504,10 @@ while True:
  			print(_("Average darkness: {avg}, Threshold: {threshold}").format(avg=str(dark_running_total / max(1, valid_frames)), threshold=str(dark_threshold)))
  			exit(13)
  		else:
@@ -308,7 +317,7 @@ index 929c127..9ed1b92 100644
  			exit(11)
  
  	# Grab a single frame of video
-@@ -333,6 +589,37 @@ while True:
+@@ -333,6 +598,37 @@ while True:
  
  			# Check if similarity exceeds our threshold
  			if similarity >= video_certainty:
@@ -346,7 +355,7 @@ index 929c127..9ed1b92 100644
  				timings["tt"] = time.time() - timings["st"]
  				timings["fl"] = time.time() - timings["fr"]
  
-@@ -395,6 +682,13 @@ while True:
+@@ -395,6 +691,13 @@ while True:
  					})
  
  				# End peacefully

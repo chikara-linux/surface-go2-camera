@@ -352,14 +352,65 @@ kwriteconfig6 --file plasmamobilerc --group QuickSettings --key enabledQuickSett
 `notify-send` が `Invalid byte sequence in conversion input` で失敗し、
 警告が一切出なくなる。`C.UTF-8` を使う。
 
-### 既知の理論上の隙間（未対処）
+### 復帰直後は注入しない
 
-サスペンド中は howdy-wake 自身も完全に停止するため、消灯を検知した
-専用のロジックは無い。**サスペンド時に画面が既に消灯していた場合**、
-復帰後の点灯を「消灯→点灯」として検知し、Enter が余分に送られる
-可能性がある。ただし実際には発生しておらず（サスペンド復帰の実測で
-一度も発火していない）、発生しても上記のガードが吸収するため
-壊れることはない。副作用は「PIN が違います」の一瞬の表示のみ。
+**サスペンドから復帰する経路では、こちらが何もしなくても認証が始まる。**
+そこへ Enter を注入すると対話型の認証が余計に 1 回失敗し、認証が二重に走る。
+
+かつてここを「理論上の隙間、実際には発生しない」と書いていたが、**発生した**
+（2026-09-06）。5 時間のサスペンド中は画面が消えているので、復帰時の点灯が
+そのまま「消灯 → 点灯」に見える。
+
+    07:49:17.724  PM: suspend exit
+    07:49:18.336  System resumed... waiting 2s   ← 自力で開始している
+    07:49:20.261  howdy-wake が発火              ← 不要な注入
+    07:49:22-26   1 回目の点灯
+    07:49:29.299  Login approved
+    07:49:30-31   2 回目の点灯（グリーターは既に消滅）
+
+`/run/howdy-resume-timestamp`（`resume_delay` が使う印）を見て、復帰から
+30 秒以内なら注入しない。
+
+### PAM から起動されたかは、親プロセスで判定してはいけない
+
+compare.py のガードは「PAM（ロック画面）から起動されたときだけ働く」。
+その判定に**親プロセスの名前を使ってはいけない。**
+
+グリーターは認証が成功すると `Qt.quit()` で終了する。2 回目の compare.py が
+Python を起動している最中（cv2/numpy の読み込みだけで数百 ms）に親が消え、
+systemd に引き取られる。**ファイルの先頭で固定しても、インタプリタの起動中に
+親が死ねば手遅れ。** 上の事故では判定が False になり、ガードが 3 つとも
+素通りした。
+
+    07:49:29.299  Login approved（1 回目が成功）
+    07:49:30.242  2 回目が点灯。このときグリーターは既に消滅
+
+**環境変数で判定する。** pam_howdy は子に `PYTHONPATH` と `PATH` だけを渡す
+（main.cc の envp）。`HOME` が無いことは exec の時点で決まり、あとから
+変わらない。親の生死に左右されない。
+
+```python
+_LAUNCHED_BY_PAM = "HOME" not in os.environ
+```
+
+### 再現しない現象を追うための観測
+
+`irwatch.py` + `irwatch.service`。発光体の brightness を 100ms ごとに読み、
+点灯した瞬間だけを、そのとき動いていた compare.py・グリーター・印の鮮度と
+ともに記録する。上の事故はこれで捕まえた。
+
+```bash
+sudo install -m 755 irwatch.py /usr/local/bin/irwatch
+install -m 644 irwatch.service ~/.config/systemd/user/
+systemctl --user daemon-reload && systemctl --user enable --now irwatch.service
+tail -30 ~/.local/state/irwatch.log
+```
+
+⚠️ **観測が系を乱さないようにすること。** 最初に書いた観測スクリプトは
+/proc の全エントリに対して `tr` を起動しており、毎秒数千プロセスを生成して
+PID が 40 万進んだ。原因調査の道具が別の異常を作っては本末転倒。
+irwatch は外部プロセスを一切起動せず、10 秒あたりの PID 消費は
+システムの通常値と同程度に収まっている。
 
 ### 画面消灯＝ロックにする場合
 
