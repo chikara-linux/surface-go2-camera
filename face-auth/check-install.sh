@@ -102,6 +102,55 @@ else
 fi
 
 echo
+echo "== 復旧スイッチ（固まったときの保険）=="
+QSDIR="$HOME/.local/share/plasma/quicksettings/org.kde.plasma.quicksetting.lockerrestart"
+if [ -x /usr/local/bin/lockscreen-restart ]; then
+  if [ -f "$REPO/surface-go2-camera/face-auth/lockscreen-restart.sh" ] && \
+     ! diff -q "$REPO/surface-go2-camera/face-auth/lockscreen-restart.sh" \
+               /usr/local/bin/lockscreen-restart >/dev/null 2>&1; then
+    ng "lockscreen-restart — リポジトリと内容が違う"
+  else
+    ok "lockscreen-restart"
+  fi
+else
+  ng "/usr/local/bin/lockscreen-restart が無い"
+fi
+# LC_ALL=C だと日本語の notify-send が失敗し、2 回目の警告が無言で消える
+if grep -q '^export LC_ALL=C$' /usr/local/bin/lockscreen-restart 2>/dev/null; then
+  ng "lockscreen-restart が LC_ALL=C を使っている"
+  note "日本語の notify-send が失敗し、警告が出なくなる。C.UTF-8 にすること"
+else
+  ok "ロケール設定（通知が出せる）"
+fi
+if [ -f "$QSDIR/contents/ui/main.qml" ]; then
+  p=$(grep -oE '"[^"]*lockscreen-restart[^"]*"' "$QSDIR/contents/ui/main.qml" | tr -d '"')
+  if [ "$p" = /usr/local/bin/lockscreen-restart ]; then
+    ok "タイルの参照先 ($p)"
+  else
+    ng "タイルの参照先が違う ($p)"
+  fi
+else
+  ng "クイック設定タイルが無い"
+fi
+if kreadconfig6 --file plasmamobilerc --group QuickSettings --key enabledQuickSettings 2>/dev/null \
+   | grep -q lockerrestart; then
+  ok "タイルが有効になっている"
+else
+  ng "タイルが有効になっていない"
+fi
+# QML はプラグイン読み込み時に一度しか読まれない。plasmashell より新しければ未反映。
+if [ -f "$QSDIR/contents/ui/main.qml" ] && pgrep -x plasmashell >/dev/null; then
+  qml_t=$(stat -c %Y "$QSDIR/contents/ui/main.qml")
+  sh_t=$(date -d "$(ps -o lstart= -p "$(pgrep -x plasmashell | head -1)")" +%s 2>/dev/null || echo 0)
+  if [ "$sh_t" -gt 0 ] && [ "$qml_t" -gt "$sh_t" ]; then
+    ng "QML が plasmashell より新しい — タイルは古い内容で動いている"
+    note "plasmashell を再起動するか、次のログイン時に反映される"
+  else
+    ok "QML は plasmashell に読み込まれている"
+  fi
+fi
+
+echo
 echo "== 常駐サービス =="
 if systemctl --user is-enabled howdy-wake.service >/dev/null 2>&1; then
   st=$(systemctl --user is-active howdy-wake.service)
