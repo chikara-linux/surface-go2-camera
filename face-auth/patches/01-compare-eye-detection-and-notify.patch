@@ -1,8 +1,8 @@
 diff --git a/howdy/src/compare.py b/howdy/src/compare.py
-index 929c127..353df25 100644
+index 929c127..6f26259 100644
 --- a/howdy/src/compare.py
 +++ b/howdy/src/compare.py
-@@ -12,7 +12,30 @@ timings = {
+@@ -12,7 +12,31 @@ timings = {
  # Import required modules
  import sys
  import os
@@ -30,10 +30,11 @@ index 929c127..353df25 100644
 +
  import json
 +import fcntl
++import glob
  import configparser
  import cv2
  from datetime import timezone, datetime
-@@ -71,6 +94,212 @@ def init_detector(lock):
+@@ -71,6 +95,264 @@ def init_detector(lock):
  	lock.release()
  
  
@@ -167,6 +168,58 @@ index 929c127..353df25 100644
 +	return {"true": True, "false": False}.get(out)
 +
 +
++DISPLAY_WAIT = 2.0        # 画面が点くのをこれだけ待つ
++
++
++def _display_on():
++	"""画面が点いているか。判定できなければ None。"""
++	for path in sorted(glob.glob("/sys/class/drm/*/dpms")):
++		d = os.path.dirname(path)
++		try:
++			if open(os.path.join(d, "enabled")).read().strip() != "enabled":
++				continue
++			return open(path).read().strip().lower() == "on"
++		except Exception:
++			continue
++	for path in sorted(glob.glob("/sys/class/backlight/*/bl_power")):
++		try:
++			return open(path).read().strip() == "0"
++		except Exception:
++			continue
++	return None
++
++
++def _display_comes_on(seconds):
++	"""画面が点くまで待つ。点いた（か判定できない）なら True。
++
++	## なぜ要るのか
++
++	電源ボタンでサスペンドすると、ロックが成立してグリーターが生成され、
++	それが即座に認証を開始する。しかし画面は既に消えている。**誰も見て
++	いないカメラを回して発光体を光らせても意味がない。**
++	実測（2026-09-06）:
++
++	    18:30:19.289  電源ボタン押下
++	    18:30:20.526  グリーター生成
++	    18:30:21.47   画面消灯
++	    18:30:22.331  発光（無意味）
++	    18:30:27.764  消灯。5.4 秒を捨てた
++
++	復帰の経路では pam_howdy が "waiting 1-2s for display" と表示を待って
++	から呼ぶので、ここに来た時点で既に点いている（実測 08:00、12:53）。
++	それでも取りこぼさないよう、即断せず少しだけ待つ。
++
++	判定できない環境では True を返し、従来どおり動かす。
++	"""
++	deadline = time.time() + seconds
++	while True:
++		if _display_on() is not False:
++			return True
++		if time.time() >= deadline:
++			return False
++		time.sleep(0.1)
++
++
 +def eye_reflection(gray, face):
 +	"""網膜反射の強さを両目について返す。
 +
@@ -246,7 +299,7 @@ index 929c127..353df25 100644
  def make_snapshot(type):
  	"""Generate snapshot after detection"""
  	snapshot.generate(snapframes, [
-@@ -121,6 +350,11 @@ frames = 0
+@@ -121,6 +403,11 @@ frames = 0
  snapframes = []
  # Tracks the best (highest) cosine similarity in the loop
  best_similarity = 0
@@ -258,7 +311,7 @@ index 929c127..353df25 100644
  # Face detection/recognition instances
  face_detector = None
  face_recognizer = None
-@@ -147,6 +381,11 @@ config.read(paths_factory.config_file_path())
+@@ -147,6 +434,11 @@ config.read(paths_factory.config_file_path())
  timeout = config.getint("video", "timeout", fallback=4)
  dark_threshold = config.getfloat("video", "dark_threshold", fallback=50.0)
  video_certainty = config.getfloat("video", "certainty", fallback=0.40)
@@ -270,7 +323,7 @@ index 929c127..353df25 100644
  detection_threshold = config.getfloat("video", "detection_threshold", fallback=0.9)
  end_report = config.getboolean("debug", "end_report", fallback=False)
  save_failed = config.getboolean("snapshots", "save_failed", fallback=False)
-@@ -178,6 +417,23 @@ lock = threading.Lock()
+@@ -178,6 +470,25 @@ lock = threading.Lock()
  lock.acquire()
  threading.Thread(target=init_detector, args=(lock,), daemon=True).start()
  
@@ -288,13 +341,15 @@ index 929c127..353df25 100644
 +		exit(11)          # 直前に解除済み。カメラを開かずに退く
 +	if _session_locked() is False:
 +		exit(11)
++	if not _display_comes_on(DISPLAY_WAIT):
++		exit(11)          # 画面が消えている。誰も見ていない
 +	if not _claim_capture():
 +		exit(11)          # 先行インスタンスが撮影中。カメラを開かずに退く
 +
  # Start video capture on the IR camera
  timings["ic"] = time.time()
  
-@@ -225,6 +481,11 @@ while True:
+@@ -225,6 +536,11 @@ while True:
  	# Increment the frame count every loop
  	frames += 1
  
@@ -306,7 +361,7 @@ index 929c127..353df25 100644
  	# Form a string to let the user know we're real busy
  	ui_subtext = "Scanned " + str(valid_frames - dark_tries) + " frames"
  	if (dark_tries > 1):
-@@ -243,6 +504,10 @@ while True:
+@@ -243,6 +559,10 @@ while True:
  			print(_("Average darkness: {avg}, Threshold: {threshold}").format(avg=str(dark_running_total / max(1, valid_frames)), threshold=str(dark_threshold)))
  			exit(13)
  		else:
@@ -317,7 +372,7 @@ index 929c127..353df25 100644
  			exit(11)
  
  	# Grab a single frame of video
-@@ -333,6 +598,37 @@ while True:
+@@ -333,6 +653,37 @@ while True:
  
  			# Check if similarity exceeds our threshold
  			if similarity >= video_certainty:
@@ -355,7 +410,7 @@ index 929c127..353df25 100644
  				timings["tt"] = time.time() - timings["st"]
  				timings["fl"] = time.time() - timings["fr"]
  
-@@ -395,6 +691,13 @@ while True:
+@@ -395,6 +746,13 @@ while True:
  					})
  
  				# End peacefully
