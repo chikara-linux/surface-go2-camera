@@ -49,12 +49,17 @@ def scan_procs():
             continue
         try:
             with open("/proc/%s/cmdline" % name, "rb") as f:
-                cmd = f.read().replace(b"\0", b" ").decode("utf-8", "replace")
+                cmd = f.read().decode("utf-8", "replace")
         except Exception:
             continue
-        if "howdy/compare.py" in cmd:
+        # 部分一致は使えない。シェルの -c は長い文字列を argv 1 個として
+        # 持つため、"howdy/compare.py" という語を含むだけの診断コマンドに
+        # 一致する（実際に 2026-09-06 07:53 の記録を誤らせた）。
+        argv = cmd.split("\0")
+        if any(a.endswith("/compare.py") and " " not in a for a in argv):
             compare.append(name)
-        elif "libexec/kscreenlocker_greet" in cmd:
+        elif any(a.endswith("/kscreenlocker_greet") and " " not in a
+                 for a in argv):
             greeter.append(name)
     return compare, greeter
 

@@ -63,23 +63,13 @@ KEY_ENTER = 28
 
 INJECT_MARK = "/run/user/%d/howdy-wake-injected" % os.getuid()
 RESUME_MARK = "/run/howdy-resume-timestamp"
-RESUME_GRACE = 30.0        # 復帰からこの秒数は注入しない
+RESUME_GRACE = 15.0        # 復帰からこの秒数以内なら、自力で始めるかを見届ける
+RESUME_WATCH = 5.0         # 見届ける長さ
+WATCH_INTERVAL = 0.2
 
 
 def _just_resumed():
     """サスペンドから復帰した直後か。
-
-    復帰の経路では、こちらが何もしなくても認証が始まる（pam_howdy が
-    "System resumed from suspend" を出す経路）。そこへ Enter を注入すると
-    対話型の認証が余計に 1 回失敗し、認証が二重に走る。
-
-    実測（2026-09-06 の事故）:
-        07:49:17.724  PM: suspend exit
-        07:49:18.336  System resumed... waiting 2s   ← 自力で開始している
-        07:49:20.261  howdy-wake が発火              ← 不要な注入
-        07:49:22-26   1 回目の点灯
-        07:49:29.299  Login approved
-        07:49:30-31   2 回目の点灯（グリーターは既に消滅）
 
     印は systemd-sleep のフックが復帰時に書く（pam_howdy の resume_delay と
     同じもの）。
@@ -88,6 +78,89 @@ def _just_resumed():
         return time.time() - float(open(RESUME_MARK).read().strip()) < RESUME_GRACE
     except Exception:
         return False
+
+
+def _is_compare_arg(arg):
+    """この argv 要素が compare.py そのものを指しているか。
+
+    **cmdline に部分一致させてはいけない。** シェルの `-c` は長い文字列を
+    argv 1 個として持つため、たまたま "howdy/compare.py" という語を含む
+    コマンド（診断スクリプトなど）に一致してしまう。この計画では
+    `pgrep -f` の自己一致で何度も誤検出している。
+
+    argv の要素が丸ごとパスであることを求め、空白を含むものは除く。
+    """
+    return (arg.endswith(b"/howdy/compare.py")
+            and not any(ws in arg for ws in (b" ", b"\t", b"\n")))
+
+
+def _auth_running():
+    """顔認証が動き出したか。
+
+    発光体が点いているか、compare.py が走っていれば動いている。
+    外部プロセスは起動しない（sysfs と /proc を読むだけ）。
+    """
+    for path in glob.glob("/sys/class/leds/*ir_illuminator*/brightness"):
+        try:
+            if int(open(path).read().strip()) > 0:
+                return True
+        except Exception:
+            pass
+    try:
+        entries = os.listdir("/proc")
+    except Exception:
+        return False
+    for name in entries:
+        if not name.isdigit():
+            continue
+        try:
+            with open("/proc/%s/cmdline" % name, "rb") as f:
+                argv = f.read().split(b"\0")
+        except Exception:
+            continue
+        if any(_is_compare_arg(a) for a in argv):
+            return True
+    return False
+
+
+def _reason_to_skip(seconds):
+    """復帰直後の点灯で、注入を見送るべきか数秒見届ける。
+
+    見送る理由を返す。注入すべきなら None。
+
+    ## なぜ「待って見る」のか
+
+    復帰の経路では、こちらが何もしなくても認証が始まることがある。
+    そこへ Enter を注入すると対話型の認証が余計に 1 回失敗し、認証が
+    二重に走る（2026-09-06 07:49 の事故）。
+
+    しかし**自力で始まるのは、グリーターが復帰後に作られたときだけ**である。
+    既にプロンプトを出したグリーターが残っていると、復帰しても始まらない。
+    実測（2026-09-06）:
+
+        時刻      復帰後にグリーターが新規か   自力で始まったか
+        08:00     はい（新規ロック）           はい（0.1 秒後）
+        12:52     いいえ（11:49 から継続）     いいえ
+        17:30     いいえ                       いいえ
+        18:18:05  いいえ                       いいえ
+        18:18:23  いいえ                       いいえ
+
+    当初は「復帰から 30 秒は注入しない」と時間だけで決めていたが、上の
+    5 件のうち 4 件で誤って抑止し、認証が始まらないまま放置された。
+    12:52 では利用者が画面に触れるまで 10 秒間なにも起きていない。
+
+    **予測をやめ、実際に始まるかを見届けてから決める。** 復帰経路は
+    "waiting 1-2s for display" と表示を待ってから撮影に入るので、点灯から
+    発光まで実測 2.0-2.7 秒かかる。5 秒あれば足りる。
+    """
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        if _auth_running():
+            return "自力で認証が始まった"
+        if display_on() is False:
+            return "見ている間に画面が消えた"
+        time.sleep(WATCH_INTERVAL)
+    return None
 
 
 def log(msg):
@@ -222,12 +295,18 @@ def main():
         if locked is not True:
             continue
         if _just_resumed():
-            log("画面が点灯（消灯 %.1f 秒）。ただし復帰直後なので注入しない"
+            skip = _reason_to_skip(RESUME_WATCH)
+            if skip:
+                log("画面が点灯（消灯 %.1f 秒）。%s ので注入しない"
+                    % (off_for, skip))
+                last_fire = time.time()
+                continue
+            log("画面が点灯（消灯 %.1f 秒）。復帰直後だが %.0f 秒待っても"
+                "始まらないので注入します" % (off_for, RESUME_WATCH))
+        else:
+            log("画面が点灯（消灯 %.1f 秒）。ロック中なので認証を起こします"
                 % off_for)
-            last_fire = time.time()
-            continue
         last_fire = time.time()
-        log("画面が点灯（消灯 %.1f 秒）。ロック中なので認証を起こします" % off_for)
         try:
             send_enter()
             _mark_injected()
