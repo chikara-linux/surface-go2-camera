@@ -104,6 +104,7 @@ PAM から起動されたときだけ働く。判定は `HOME` 環境変数の�
 導入の順（レビュー後）:
 
 ```bash
+cd "$HOME/開発・検証/camera"   # 以下は相対パス。ここから実行する
 # 1. 更新保護（パッチと無関係に、既存の C++ パッチも守る）
 sudo apt-mark hold plasma-mobile plasma-mobile-tweaks
 # 2. 第 0 段
