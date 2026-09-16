@@ -62,6 +62,14 @@ fi
 
 echo
 echo "== 設定 =="
+if [ -f "$SRC/config.ini" ]; then
+  if diff -q "$SRC/config.ini" /etc/howdy/config.ini >/dev/null 2>&1; then
+    ok "config.ini がリポジトリと一致"
+  else
+    ng "config.ini — リポジトリと内容が違う"
+    note "差分: diff '$SRC/config.ini' /etc/howdy/config.ini"
+  fi
+fi
 for k in recording_plugin certainty consecutive_matches eye_reflection_threshold; do
   v=$(grep -E "^$k\s*=" /etc/howdy/config.ini 2>/dev/null | head -1)
   [ -n "$v" ] && ok "$v" || ng "$k が config.ini に無い"
@@ -148,6 +156,54 @@ if [ -f "$QSDIR/contents/ui/main.qml" ] && pgrep -x plasmashell >/dev/null; then
   else
     ok "QML は plasmashell に読み込まれている"
   fi
+fi
+
+echo
+echo "== plasma-mobile の自前パッチと更新保護 =="
+PM_BASE=6.6.5-0ubuntu0.1          # パッチを当てている上流の版
+PM_VER=$(dpkg-query -W -f='${Version}' plasma-mobile 2>/dev/null)
+case "$PM_VER" in
+  *+chikara*) ok "plasma-mobile は自前ビルド ($PM_VER)" ;;
+  *)          ng "plasma-mobile が素の版に戻っている ($PM_VER)"
+              note "当て直し: plasma-mobile-patch build → Timeshift → install" ;;
+esac
+LS=/usr/share/plasma/shells/org.kde.plasma.mobileshell/contents/lockscreen
+for f in LockScreen.qml LockScreenState.qml; do
+  if grep -q 'chikara: face-auth-lockscreen v1' "$LS/$f" 2>/dev/null; then
+    ok "$f に起動ロジックのパッチが入っている"
+  else
+    ng "$f にパッチが無い（howdy-wake が注入に戻る。締め出しはしない）"
+  fi
+done
+if apt-mark showhold 2>/dev/null | grep -qx plasma-mobile; then
+  ok "plasma-mobile は hold（Discover / apt で上書きされない）"
+else
+  ng "plasma-mobile が hold されていない"
+  note "直す: sudo apt-mark hold plasma-mobile plasma-mobile-tweaks"
+fi
+ARCH=$(apt-cache madison plasma-mobile 2>/dev/null | awk -F'|' '/Packages/ {gsub(/ /,"",$2); print $2}' | sort -V | tail -1)
+if [ -n "$ARCH" ] && dpkg --compare-versions "$ARCH" gt "$PM_BASE"; then
+  ng "アーカイブに新しい plasma-mobile がある ($ARCH > $PM_BASE)"
+  note "パッチを新版に当て直す時期。hold のままだと上流の修正を受け取れない"
+else
+  ok "アーカイブの版はパッチの基準と同じ (${ARCH:-不明})"
+fi
+PDIR="$HOME/開発・検証/plasma-mobile-window-patch"
+if [ -f "$PDIR/plasma-mobile-lockscreen-face-auth.patch" ]; then
+  if diff -q "$PDIR/plasma-mobile-lockscreen-face-auth.patch" \
+             "$REPO/surface-go2-camera/face-auth/plasma-mobile/plasma-mobile-lockscreen-face-auth.patch" >/dev/null 2>&1; then
+    ok "パッチ置き場とリポジトリのパッチが一致"
+  else
+    ng "パッチ置き場とリポジトリのパッチが違う"
+  fi
+else
+  ng "パッチ置き場に plasma-mobile-lockscreen-face-auth.patch が無い"
+fi
+if systemctl --user is-enabled patch-watch.path >/dev/null 2>&1; then
+  ok "更新の監視 (patch-watch.path) が有効"
+else
+  ng "更新の監視 (patch-watch.path) が有効になっていない"
+  note "直す: systemctl --user enable --now patch-watch.path"
 fi
 
 echo

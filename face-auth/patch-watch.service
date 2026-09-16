@@ -1,0 +1,7 @@
+[Unit]
+Description=Check local patches after a dpkg run and notify if something was undone
+After=graphical-session.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/開発・検証/camera/ir-face/src/patch-watch.sh

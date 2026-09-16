@@ -1,0 +1,113 @@
+diff --git a/shell/contents/lockscreen/LockScreenState.qml b/shell/contents/lockscreen/LockScreenState.qml
+--- a/shell/contents/lockscreen/LockScreenState.qml
++++ b/shell/contents/lockscreen/LockScreenState.qml
+@@ -37,7 +37,72 @@
+ 
+     Component.onCompleted: authenticator.startAuthenticating();
+ 
++    // chikara: face-auth-lockscreen v1
++    // 画面が点いたときに非対話認証（顔・指紋）を起こす。LockScreen.qml の
++    // DPMSUtil から呼ばれる。
++    //
++    // 仕組み。PamAuthenticators の状態は startAuthenticating() で Authenticating
++    // になり、**対話型（PIN）の失敗でしか Idle に戻らない。** 顔認証が時間切れに
++    // なっても戻らない。そして startAuthenticating() は Authenticating の間は
++    // 何もしない。つまり
++    //   - 状態が Idle（自動ロックの猶予中に生成されたグリーターなど）なら
++    //     そのまま startAuthenticating() でよい
++    //   - Authenticating（電源ボタンやサスペンドでロックし、最初の顔認証が
++    //     時間切れになったあと）なら、対話型の会話を打ち切って Idle に戻し、
++    //     その失敗が届いたところで再開する（下の onFailed）
++    // 打ち切りは PAM_CONV_ERR で終わり、pam_unix は検証に入る前に返るので
++    // 失敗遅延は付かない。空 PIN を送る方式（外部からの Enter）との違いはここ。
++    //
++    // 絞り: PIN の判定中・PIN 失敗の直後（graceLockTimer）・解錠済みなら呼ばない。
++    // 前回から 3 秒以内も呼ばない。kscreenlocker は 2 秒以内の失敗が 4 回続くと
++    // その認証器を無効にし、グリーターの寿命まで戻さないため。
++    property double lastNoninteractiveRestart: 0
++    property bool noninteractiveRestartPending: false
++    property var noninteractiveRestartFallback: Timer {
++        // 打ち切りの失敗が届かない場合（対話型が会話中でなかった等）の保険
++        interval: 1500
++        onTriggered: {
++            if (root.noninteractiveRestartPending) {
++                root.noninteractiveRestartPending = false;
++                console.log('restart noninteractive auth (fallback)');
++                authenticator.startAuthenticating();
++            }
++        }
++    }
++    function restartNoninteractive(): void {
++        if (root.waitingForAuth || graceLockTimer.running || authenticator.unlocked) {
++            return;
++        }
++        const now = Date.now();
++        if (now - lastNoninteractiveRestart < 3000) {
++            return;
++        }
++        lastNoninteractiveRestart = now;
++        if (authenticator.state === ScreenLocker.Authenticators.Idle) {
++            console.log('restart noninteractive auth (screen on, idle)');
++            authenticator.startAuthenticating();
++            return;
++        }
++        console.log('restart noninteractive auth (screen on, cancelling interactive prompt)');
++        root.noninteractiveRestartPending = true;
++        noninteractiveRestartFallback.restart();
++        authenticator.cancel();
++    }
++
+     function tryPassword() {
++        // chikara: face-auth-lockscreen v1
++        // 既に解錠済み（顔・指紋が成功した直後）なら startAuthenticating() を
++        // 呼んではいけない。PamAuthenticator::tryUnlock() は無条件に
++        // m_unlocked = false へ戻すため、成功が取り消され、グリーターが終了を
++        // 拒む（"Greeter tried to quit without being unlocked"）。TextField の
++        // focus 喪失（editingFinished）で成功の直後にここへ来ることがある。
++        // 解錠済みなら終了だけを求める。
++        if (authenticator.unlocked) {
++            console.log('already unlocked; quitting instead of re-authenticating');
++            Qt.quit();
++            return;
++        }
++
+         // ensure it's in authenticating state (it might get unset after suspend)
+         authenticator.startAuthenticating();
+ 
+@@ -83,6 +148,16 @@
+             if (kind != 0) { // if this is coming from the noninteractive authenticators
+                 return;
+             }
++            // chikara: face-auth-lockscreen v1
++            // restartNoninteractive() が打ち切った対話型の失敗。利用者の失敗では
++            // ないので「PIN が違います」は出さず、状態が Idle に戻ったいま再開する。
++            if (root.noninteractiveRestartPending) {
++                root.noninteractiveRestartPending = false;
++                noninteractiveRestartFallback.stop();
++                console.log('restart noninteractive auth (after cancelling interactive prompt)');
++                authenticator.startAuthenticating();
++                return;
++            }
+             console.log('login failed');
+             graceLockTimer.restart();
+             root.pinLabel = root.wrongPinLabel;
+diff --git a/shell/contents/lockscreen/LockScreen.qml b/shell/contents/lockscreen/LockScreen.qml
+--- a/shell/contents/lockscreen/LockScreen.qml
++++ b/shell/contents/lockscreen/LockScreen.qml
+@@ -95,6 +95,16 @@
+                 lockScreenState.resetPassword();
+             }
+         }
++
++        // chikara: face-auth-lockscreen v1
++        // 画面が点いたら非対話認証（顔・指紋）を起こす。ロック画面は触れるまで
++        // 非対話認証を再開しないため、画面が点いても顔認証が始まらなかった。
++        // 絞りは LockScreenState.restartNoninteractive() にある。
++        onDpmsTurnedOn: (screen) => {
++            if (screen.name === Screen.name) {
++                lockScreenState.restartNoninteractive();
++            }
++        }
+     }
+ 
+     // Container for lockscreen contents

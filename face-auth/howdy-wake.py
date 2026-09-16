@@ -34,6 +34,13 @@ Enter でなければ駄目である。修飾キー（Shift）では認証が始
   認証の判断は PAM に残る。このサービスは「触った」のと同じ刺激を
   与えるだけで、認証そのものには関与しない。
 
+## ロック画面が自ら起こす版との共存
+
+plasma-mobile に自前パッチ（画面点灯で startAuthenticating() を呼ぶ）が
+入っている間、このサービスは注入しない。判定はロック画面 QML の中身
+（目印のコメント）で行う。パッチが更新で外れれば自動で注入に戻る。
+つまりこのサービスは**保険**として常駐し続ける。
+
 ## 安全側の作り
 
 * 発火は「消灯 → 点灯」の遷移のみ。点灯したままの再発火はしない。
@@ -63,6 +70,28 @@ KEY_ENTER = 28
 
 INJECT_MARK = "/run/user/%d/howdy-wake-injected" % os.getuid()
 RESUME_MARK = "/run/howdy-resume-timestamp"
+LOCKSCREEN_QML = ("/usr/share/plasma/shells/org.kde.plasma.mobileshell"
+                  "/contents/lockscreen/LockScreen.qml")
+LOCKSCREEN_MARK = b"chikara: face-auth-lockscreen v1"
+
+
+def _lockscreen_restarts_itself():
+    """ロック画面 QML が、画面点灯で自ら非対話認証を起こす版か。
+
+    plasma-mobile に当てた自前パッチ（plasma-mobile-lockscreen-face-auth.patch）
+    が入っていれば、このサービスが Enter を注入する理由は無い。注入すると
+    空 PIN の失敗と二重の認証を作る。
+
+    **パッケージの版ではなく、実際に置かれているファイルの中身を見る。**
+    更新でパッチが外れた瞬間から、このサービスは従来どおり注入に戻る。
+    人の手を介さず、劣化もしない。毎回読むのは、更新が当たった直後にも
+    正しく切り替わるため（ファイルは 10KB 程度）。
+    """
+    try:
+        with open(LOCKSCREEN_QML, "rb") as f:
+            return LOCKSCREEN_MARK in f.read()
+    except Exception:
+        return False
 RESUME_GRACE = 15.0        # 復帰からこの秒数以内なら、自力で始めるかを見届ける
 RESUME_WATCH = 5.0         # 見届ける長さ
 WATCH_INTERVAL = 0.2
@@ -293,6 +322,11 @@ def main():
             continue
         locked = is_locked()
         if locked is not True:
+            continue
+        if _lockscreen_restarts_itself():
+            log("画面が点灯（消灯 %.1f 秒）。ロック画面が自ら認証を起こす版なので"
+                "注入しない" % off_for)
+            last_fire = time.time()
             continue
         if _just_resumed():
             skip = _reason_to_skip(RESUME_WATCH)

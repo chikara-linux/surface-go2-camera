@@ -1,0 +1,9 @@
+[Unit]
+# dpkg がパッケージを入れ替えたら導入点検を走らせる（patch-watch.service）。
+Description=Watch dpkg status for package changes that may undo local patches
+
+[Path]
+PathModified=/var/lib/dpkg/status
+
+[Install]
+WantedBy=default.target

@@ -1,13 +1,63 @@
 diff --git a/howdy/src/config.ini b/howdy/src/config.ini
-index ac68b64..b3072fb 100644
+index ac68b64..d02e8c2 100644
 --- a/howdy/src/config.ini
 +++ b/howdy/src/config.ini
-@@ -48,25 +48,25 @@ workaround = off
+@@ -6,14 +6,14 @@
+ detection_notice = false
+ 
+ # Print that face detection has timed out
+-timeout_notice = true
++timeout_notice = false
+ 
+ # Do not print anything when a face verification succeeds
+-no_confirmation = false
++no_confirmation = true
+ 
+ # When a user without a known face model tries to use this script, don't
+ # show an error but fail silently
+-suppress_unknown = false
++suppress_unknown = true
+ 
+ # Disable Boy-Howdy in remote shells
+ abort_if_ssh = true
+@@ -28,7 +28,7 @@ disabled = false
+ # Seconds to wait after a suspend/resume before attempting face auth.
+ # Prevents howdy from firing before the display has powered on, which can
+ # leave the lock screen in a broken state. Set to 0 to disable.
+-resume_delay = 3
++resume_delay = 0
+ 
+ # Workaround for dismissing a simultaneous password prompt after face match.
+ # Only relevant if your PAM stack shows a password prompt while howdy runs
+@@ -41,6 +41,22 @@ resume_delay = 3
+ workaround = off
+ 
+ [video]
++
++# --- 開眼・注視の要求（IR 発光体を使う構成で追加） ---
++# 顔認証は「本人が寝ているか起きているか」を原理的に区別できない。
++# 実測では目を閉じても一致度 0.766-0.815 で、閾値では分離できなかった。
++# 網膜反射（赤外線が瞳孔から入り網膜で反射する現象）は目を開けて
++# カメラを見ているときだけ現れるため、これを別条件として要求する。
++#   目を開けて注視 21-35 / 閉眼 0 / 細目 0 / 視線外し 平均6
++require_open_eyes = true
++eye_reflection_threshold = 15.0
++
++# 解除に必要な「連続して一致したフレーム数」。
++# 1 にすると 1 フレームでも通れば解除する従来の挙動になるが、それは実質
++# 最大値を採る処理で、閾値付近の他人が外れ値を引くまで試行を繰り返せる。
++# 本人は毎フレーム 0.85 前後を出すので、3 にしても体感は数十 ms しか変わらない。
++consecutive_matches = 3
++
+ # The certainty threshold for face matching (cosine similarity)
+ # Range: 0.0 to 1.0, higher values are MORE strict (require closer match)
+ # Recommended values:
+@@ -48,25 +64,25 @@ workaround = off
  #   0.38 = Balanced (good accuracy with reasonable speed)
  #   0.45 = Secure (very strict, may require better lighting/positioning)
  # Default 0.40 is conservative — prioritizes security over convenience
 -certainty = 0.40
-+certainty = 0.45
++certainty = 0.70
  
  # Minimum detection confidence for the face detector (0.0 to 1.0)
  # Higher values reduce false detections but may miss faces at odd angles
@@ -16,7 +66,7 @@ index ac68b64..b3072fb 100644
  
  # The number of seconds to search before timing out
 -timeout = 4
-+timeout = 6
++timeout = 5
  
  # The path of the device to capture frames from
  # Video devices are usually found in /dev/v4l/by-path/
@@ -33,7 +83,7 @@ index ac68b64..b3072fb 100644
  
  # Set the camera input profile to this width and height
  # The largest profile will be used if set to -1
-@@ -82,7 +82,7 @@ dark_threshold = 60
+@@ -82,7 +98,7 @@ dark_threshold = 60
  
  # The recorder to use. Can be either opencv (default), ffmpeg or pyv4l2.
  # Switching from the default opencv to ffmpeg can help with grayscale issues.

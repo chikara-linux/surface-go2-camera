@@ -267,6 +267,21 @@ compare.py の直前成功ガードと `MIN_SUCCESS_DELAY` は残す（多重防
 ロック中・`!waitingForAuth`・前回から 3 秒以上（C7）のときだけ
 `lockScreenState.restartNoninteractive()` → `startAuthenticating()`。
 
+**実装時に見つけた穴（2026-09-16 同日）。** `PamAuthenticators` の状態は
+`startAuthenticating()` で `Authenticating` になり、**対話型の失敗でしか `Idle` に
+戻らない**（顔認証の時間切れでは戻らない）。そして `startAuthenticating()` は
+`Authenticating` の間は何もしない。つまり電源ボタンやサスペンドでロックして
+最初の顔認証が時間切れになったあとは、`onDpmsTurnedOn` から
+`startAuthenticating()` を呼んでも**無反応**だった。注入の実測もこれを裏付ける
+（即時に再開した 30 件は状態が `Idle` のグリーター＝自動ロックの猶予中に生成され
+最初の認証が走らなかったもの、3.9 秒かかった 12 件は `Authenticating`）。
+
+対処: 状態が `Authenticating` なら `authenticator.cancel()` で対話型の会話だけを
+打ち切る。会話は `PAM_CONV_ERR` で終わり、pam_unix は検証に入る前に返るので
+**失敗遅延は付かない**（空 PIN との違い）。その失敗で状態が `Idle` に戻り、QML の
+`onFailed` で「PIN が違います」を出さずに `startAuthenticating()` する。
+打ち切りの失敗が届かない場合の保険に 1.5 秒のタイマーを置く。
+
 同時に howdy-wake は**注入を止めて観測だけ**にし、`irwatch` と併せて
 2 週間見る。誤起動 0 件・リードタイム 1 秒前後が確認できたら、
 注入・印・`MIN_SUCCESS_DELAY` を撤去する。ガードは画面点灯・撮影権・

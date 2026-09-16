@@ -86,6 +86,37 @@ PAM から起動されたときだけ働く。判定は `HOME` 環境変数の�
 リードタイムを 2.6 / 3.9 秒から約 1 / 2 秒に縮められる。** 段階的に進める
 計画と、却下した案・再検討の条件を表にしてある。
 
+### 起動ロジックの改良（第 0〜2 段、2026-09-16 実装・導入前）
+
+再検討の最終案を実装した。**導入は机上レビューのあと。** 部品は 4 つ。
+
+| 部品 | 置き場 | 何をするか |
+|---|---|---|
+| `resume_delay = 0` | `patches/04-config-defaults.patch` | 第 0 段。復帰後の 2〜3 秒の待ちをやめる。画面が点くまでの待ちは compare.py のガードが担う |
+| `plasma-mobile/plasma-mobile-lockscreen-face-auth.patch` | plasma-mobile のローカルビルド（`~/開発・検証/plasma-mobile-window-patch/` に同じもの） | 第 1 段: `tryPassword()` は解錠済みなら `Qt.quit()` だけ（成功の取り消しを防ぐ）。第 2 段: `onDpmsTurnedOn` で非対話認証を再開。状態が `Idle` なら `startAuthenticating()`、`Authenticating`（最初の顔認証が時間切れのあと。状態は対話型の失敗でしか戻らない）なら対話型の会話を `cancel()` で打ち切り、その失敗が届いたところで黙って再開（「PIN が違います」は出さない。打ち切りは `PAM_CONV_ERR` で失敗遅延が付かない）。3 秒の絞り、PIN 判定中と失敗直後は呼ばない |
+| `howdy-wake.py` の自己判別 | 同 | ロック画面 QML に目印 `chikara: face-auth-lockscreen v1` があれば注入しない。無ければ従来どおり注入。**パッチが外れても自動で戻る保険** |
+| `patch-watch.{path,service,sh}` + `check-install.sh` | 同 | dpkg が動いたら点検し、崩れていれば通知。plasma-mobile の hold、目印、アーカイブの新版、設定の一致を見る |
+
+**更新が当たっても締め出しはしない。** 素の QML に戻れば従来の挙動（howdy-wake が
+注入）に戻るだけで、`/etc/pam.d/kde` と compare.py のガードは plasma-mobile と
+無関係。詳細は [design-review-2026-09.md](design-review-2026-09.md) §5。
+
+導入の順（レビュー後）:
+
+```bash
+# 1. 更新保護（パッチと無関係に、既存の C++ パッチも守る）
+sudo apt-mark hold plasma-mobile plasma-mobile-tweaks
+# 2. 第 0 段
+sudo install -m 644 -o root -g root ir-face/boy-howdy/howdy/src/config.ini /etc/howdy/config.ini
+# 3. 保険と監視
+sudo install -m 755 ir-face/src/howdy-wake.py /usr/local/bin/howdy-wake
+systemctl --user restart howdy-wake.service
+install -m 644 ir-face/src/patch-watch.path ir-face/src/patch-watch.service ~/.config/systemd/user/
+systemctl --user daemon-reload && systemctl --user enable --now patch-watch.path
+# 4. 第 1・2 段（約 22 分のビルド。導入前に Timeshift）
+plasma-mobile-patch build && plasma-mobile-patch install   # → 再ログイン
+```
+
 ### 固まったときの保険
 
 クイック設定のタイルからロック画面を再起動できる。**同一ロックセッションでの
@@ -117,6 +148,8 @@ Boy-Howdy は dlib をやめて OpenCV 内蔵の DNN（YuNet 検出 + SFace 認�
 | `howdy-wake.service` | 上の systemd ユーザーユニット |
 | `lockscreen-restart.sh` | 固まったロック画面の復旧スイッチ |
 | `quicksetting/` | 上を呼ぶクイック設定タイル（Plasma Mobile） |
+| `plasma-mobile/plasma-mobile-lockscreen-face-auth.patch` | ロック画面が画面点灯で認証を起こし、成功を取り消さないようにする |
+| `patch-watch.path` / `.service` / `.sh` | dpkg の動作後に導入点検と通知 |
 | `irwatch.py` | 発光の常時記録（再現しない現象を追うため） |
 | `irwatch.service` | 上の systemd ユーザーユニット |
 | `impostor_test.py` | 他人受入率の測定 |
