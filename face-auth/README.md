@@ -77,6 +77,15 @@ PAM から起動されたときだけ働く。判定は `HOME` 環境変数の�
 
 **CLI 実行（`howdy test` など）はすべて素通りする。**
 
+### 起動ロジックの再検討（2026-09-16）
+
+上の起動ロジックをゼロから組み直し、現行実装と比較した記録が
+[design-review-2026-09.md](design-review-2026-09.md) にある。
+**結論: 契機（ロック中に画面が点いた）は正しい。始め方（Enter の注入）は
+ロック画面 QML から直接 `startAuthenticating()` を呼ぶ形に置き換えられ、
+リードタイムを 2.6 / 3.9 秒から約 1 / 2 秒に縮められる。** 段階的に進める
+計画と、却下した案・再検討の条件を表にしてある。
+
 ### 固まったときの保険
 
 クイック設定のタイルからロック画面を再起動できる。**同一ロックセッションでの
@@ -404,6 +413,17 @@ kscreenlocker は異常終了を3回までしか許容せず（解除するま�
 
 **これが原因で一度、強制再起動が必要な状態になった（2026-09-05）。**
 
+⚠️ **機序の説明を 2026-09-16 に訂正した。** 以下で挙げる Bug 515299 の修正は
+事故の時点で既に入っていた（Ubuntu の 6.6.5 パッケージは自前の backport を
+落としている）。ソースを追った結果、関与しているのは
+**`PamAuthenticator::tryUnlock()` が無条件に `m_unlocked = false` にすること**と、
+**成功の 1〜3 ms 後にロック画面が空 PIN を `tryPassword()` で送ること**
+（10 日間の成功 194 件中 48 件）の組み合わせで、グリーターが
+「Greeter tried to quit without being unlocked」を出して終了を拒む。
+実測の相関（対話型失敗の 2.3 秒後に成功すると固まる）と対処
+（`MIN_SUCCESS_DELAY`）は有効。詳細は
+[design-review-2026-09.md](design-review-2026-09.md) の C6。
+
 kscreenlocker は認証が失敗すると「次に認証を受け付ける時刻」を記録し、
 それ以前に届いた認証を**黙って破棄する**（[KDE Bug 515299](https://bugs.kde.org/show_bug.cgi?id=515299)）。
 
@@ -474,6 +494,15 @@ kwriteconfig6 --file plasmamobilerc --group QuickSettings --key enabledQuickSett
 ⚠️ **スクリプトで `LC_ALL=C` を使ってはいけない。** 日本語を渡した
 `notify-send` が `Invalid byte sequence in conversion input` で失敗し、
 警告が一切出なくなる。`C.UTF-8` を使う。
+
+### 復帰で「自力で始まる」の正体
+
+復帰時に操作なしで認証が始まるのは、**サスペンドで出力が外れて付け直され、
+グリーターが画面ごとに QML を読み直す**（`UnlockApp::handleScreen()` →
+`Component.onCompleted` → `startAuthenticating()`）ため。10 日間の
+「自力で始まった」40 件のうち 38 件で QML 生成の痕跡がある。DPMS だけの
+点灯では出力が付け直されないので始まらない。これが常駐サービスの
+存在理由の正確な説明。
 
 ### 復帰直後は注入しない
 
