@@ -1,7 +1,7 @@
 diff --git a/shell/contents/lockscreen/LockScreenState.qml b/shell/contents/lockscreen/LockScreenState.qml
 --- a/shell/contents/lockscreen/LockScreenState.qml
 +++ b/shell/contents/lockscreen/LockScreenState.qml
-@@ -37,7 +37,72 @@
+@@ -37,7 +37,83 @@
  
      Component.onCompleted: authenticator.startAuthenticating();
  
@@ -32,10 +32,22 @@ diff --git a/shell/contents/lockscreen/LockScreenState.qml b/shell/contents/lock
 +        onTriggered: {
 +            if (root.noninteractiveRestartPending) {
 +                root.noninteractiveRestartPending = false;
-+                console.log('restart noninteractive auth (fallback)');
-+                authenticator.startAuthenticating();
++                root.startNoninteractiveUnlessUnlocked('fallback');
 +            }
 +        }
++    }
++    // 再開の直前にもう一度、解錠済みでないことを確かめる。打ち切りの失敗を
++    // 待っている数 ms の間に顔認証が成功していると、startAuthenticating() →
++    // tryUnlock() が m_unlocked を偽に戻し、終了できなくなる（tryPassword と
++    // 同じ機構）。解錠済みなら再開せず終了だけを求める。
++    function startNoninteractiveUnlessUnlocked(why: string): void {
++        if (authenticator.unlocked) {
++            console.log('already unlocked; quitting instead of restarting (' + why + ')');
++            Qt.quit();
++            return;
++        }
++        console.log('restart noninteractive auth (' + why + ')');
++        authenticator.startAuthenticating();
 +    }
 +    function restartNoninteractive(): void {
 +        if (root.waitingForAuth || graceLockTimer.running || authenticator.unlocked) {
@@ -47,8 +59,7 @@ diff --git a/shell/contents/lockscreen/LockScreenState.qml b/shell/contents/lock
 +        }
 +        lastNoninteractiveRestart = now;
 +        if (authenticator.state === ScreenLocker.Authenticators.Idle) {
-+            console.log('restart noninteractive auth (screen on, idle)');
-+            authenticator.startAuthenticating();
++            root.startNoninteractiveUnlessUnlocked('screen on, idle');
 +            return;
 +        }
 +        console.log('restart noninteractive auth (screen on, cancelling interactive prompt)');
@@ -74,7 +85,7 @@ diff --git a/shell/contents/lockscreen/LockScreenState.qml b/shell/contents/lock
          // ensure it's in authenticating state (it might get unset after suspend)
          authenticator.startAuthenticating();
  
-@@ -83,6 +148,16 @@
+@@ -83,6 +159,15 @@
              if (kind != 0) { // if this is coming from the noninteractive authenticators
                  return;
              }
@@ -84,8 +95,7 @@ diff --git a/shell/contents/lockscreen/LockScreenState.qml b/shell/contents/lock
 +            if (root.noninteractiveRestartPending) {
 +                root.noninteractiveRestartPending = false;
 +                noninteractiveRestartFallback.stop();
-+                console.log('restart noninteractive auth (after cancelling interactive prompt)');
-+                authenticator.startAuthenticating();
++                root.startNoninteractiveUnlessUnlocked('after cancelling interactive prompt');
 +                return;
 +            }
              console.log('login failed');
