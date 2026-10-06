@@ -110,6 +110,21 @@ else
 fi
 
 echo
+echo "== 前面カメラ（ov5693-fix）=="
+# 向き補正で水平反転を常時有効にしているため、ビニングモードでは映らない。
+# allow_binning パラメータがあれば修正済みのモジュール（2026-10-06）。
+if modinfo -F parm ov5693 2>/dev/null | grep -q '^allow_binning'; then
+  ok "ov5693 はビニング無効化済みの版"
+  if [ "$(cat /sys/module/ov5693/parameters/allow_binning 2>/dev/null)" = Y ]; then
+    ng "allow_binning=Y で読み込まれている（640x480 などで黒くなる）"
+    note "/etc/modprobe.d/ の ov5693 の options を確認"
+  fi
+else
+  ng "ov5693 が古い版（640x480 などの要求で前面カメラが黒くなる）"
+  note "直す: sudo cp ~/開発・検証/camera/ov5693-fix-1.0/ov5693.c /usr/src/ov5693-fix-1.0/ → dkms build/install → 再起動"
+fi
+
+echo
 echo "== 復旧スイッチ（固まったときの保険）=="
 QSDIR="$HOME/.local/share/plasma/quicksettings/org.kde.plasma.quicksetting.lockerrestart"
 if [ -x /usr/local/bin/lockscreen-restart ]; then

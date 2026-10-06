@@ -406,6 +406,35 @@ static u32 ov5693_mbus_code(struct ov5693_device *ov5693)
 	return MEDIA_BUS_FMT_SBGGR10_1X10;
 }
 
+/*
+ * Do not offer the 2x2 binned readout (1296x972) unless asked to.
+ *
+ * Because of the mirrored mounting above, the horizontal flip is always on.
+ * ov5693_flip_horz_configure() sets both the ISP-side and the sensor-side
+ * flip bits of FORMAT2, which is correct for the full readout but corrupts
+ * the CSI-2 framing in binned mode: the CIO2 reports "frame sync error" and
+ * "payload length is 1617408, received 0" for every frame, and applications
+ * get a black picture. libcamera picks the binned mode whenever the
+ * requested output is smaller than 1280x720 (640x480, for instance, which
+ * is what many video-call sites ask for), so the camera worked in some
+ * applications and not in others. Measured 2026-10-06:
+ *
+ *   binned, sensor hflip on  (default)   black, frame sync errors
+ *   binned, sensor hflip off (mirror)    streams
+ *   full,   either                       streams
+ *
+ * Others found the same on IPU6 machines: in binned mode only the
+ * sensor-side flip bit may be set, and the Bayer phase does not move with
+ * the mirror. Supporting that properly needs the media bus code to depend on
+ * the binning as well as on the flips, which libcamera does not expect, so
+ * the full readout is used for every size and the ImgU does the scaling.
+ * allow_binning=1 restores the previous behaviour for experiments.
+ */
+static bool allow_binning;
+module_param(allow_binning, bool, 0444);
+MODULE_PARM_DESC(allow_binning,
+		 "Offer the 2x2 binned mode (breaks with the hflip fix; default off)");
+
 static int ov5693_flip_horz_configure(struct ov5693_device *ov5693,
 				      bool enable)
 {
@@ -876,6 +905,8 @@ static int ov5693_set_fmt(struct v4l2_subdev *sd,
 			 DIV_ROUND_CLOSEST(crop->width, width), 1, 2);
 	vratio = clamp_t(unsigned int,
 			 DIV_ROUND_CLOSEST(crop->height, height), 1, 2);
+	if (!allow_binning)
+		hratio = vratio = 1;	/* see allow_binning */
 
 	fmt = __ov5693_get_pad_format(ov5693, state, format->pad,
 				      format->which);
@@ -1081,7 +1112,8 @@ static int ov5693_enum_frame_size(struct v4l2_subdev *sd,
 	struct ov5693_device *ov5693 = to_ov5693_sensor(sd);
 	struct v4l2_rect *__crop;
 
-	if (fse->index > 1 || fse->code != ov5693_mbus_code(ov5693))
+	if (fse->index > (allow_binning ? 1 : 0) ||
+	    fse->code != ov5693_mbus_code(ov5693))
 		return -EINVAL;
 
 	__crop = __ov5693_get_pad_crop(ov5693, state, fse->pad, fse->which);

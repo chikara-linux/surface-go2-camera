@@ -94,6 +94,11 @@ cp wireplumber/*.conf ~/.config/wireplumber/wireplumber.conf.d/
 
 ## なぜ専用アプリが要るのか
 
+**前面カメラは常に全画素（2592x1944）で読み出す。** ビニングモード（1296x972）は
+向き補正（水平反転）と両立せず全フレームが空になるため、提示しないようにしてある
+（`dkms/ov5693-fix/binning-off.patch`、2026-10-06）。以前は 1280x720 未満を要求する
+アプリ（640x480 を求めるビデオ通話サイトなど）で映像が黒くなっていた。
+
 **PipeWire 経由では 1280x720 が上限。** SPA プラグインが view-finder ロールで
 ノードを作るため、ポータル経由のアプリはそこで頭打ちになる。
 `libcamerasrc` のパッドに `stream-role=still-capture` を指定すると
