@@ -1,35 +1,32 @@
 # Surface Go 2 (OV5693 フロントカメラ) 向け IPU3 チューニング
 #
-# libcamera 既定の uncalibrated.yaml をベースに、AGC の目標輝度だけを上げたもの。
-# 既定の relativeLuminanceTarget は 0.16 で、屋内では露出が上限に張り付いたまま
-# アナログゲインを 1.125 までしか使わず、かなり暗い絵になる。
+# 2026-10-06 に作り直した。ビデオ通話で顔が暗く、色の抜けた「暗視カメラの
+# ような」絵になっていたため。スマートフォンのプレビュー画面を作例にして
+# 実機で見比べ、逆光（天井の照明）に強いこの組み合わせを選んだ。
 #
-# 0.40 が実用上の最適値（2026-08-27 に実機で判断）。
-#   0.30 … やや暗い
-#   0.40 … 適正
-#   0.50 以上 … 白飛びが出る
+#   relativeLuminanceTarget 0.59  … 露出を従来（0.40）の 1.47 倍にする。
+#       壁がスマホと同じ明るさ（線形 0.64）に来る値を実測で求めた
+#   ToneMapping gamma 2.8         … 中間調（顔）を持ち上げる。従来は 1.1 で
+#       ほぼ直線だったため、露出を上げても顔が沈んだままだった
 #
-# 注意: 「0.30 より上げても効果が無い」という以前の記述は誤りだった。
-# あれは暗所で AE が上限（露出 33167us / ゲイン 7.94）に張り付いていた
-# 状態での測定で、飽和していたから差が出なかっただけ。通常光量下では
-# 目標値を上げれば素直に明るくなる。
+# **gamma の行は、改造した IPA が無いと無視される**（libcamera 0.7.x の IPU3 は
+# ガンマを 1.1 に固定している）。改造版は ../libcamera-ipa/ を参照。改造版が
+# 読まれていないときにこのファイルだけが効くと、露出だけが上がって背景が
+# 白く飛ぶので、check-install.sh で両方揃っているかを点検している。
 #
-# 色補正 (AWB/CCM) と周辺減光は改善しない。IPU3 の IPA にシェーディング補正
-# アルゴリズムが存在しないため、中央より周辺が暗くなるのは補正できない。
+# 「0.50 以上は白飛び」という以前の記述は、ガンマ 1.1 のときの話。
 #
-# 導入: sudo cp ov5693.yaml /usr/share/libcamera/ipa/ipu3/
+# 導入: sudo install -m 644 ov5693.yaml /usr/share/libcamera/ipa/ipu3/
 #       systemctl --user restart wireplumber
-# 撤去: sudo rm /usr/share/libcamera/ipa/ipu3/ov5693.yaml
-#       （uncalibrated.yaml へのフォールバックに戻るだけ）
-# 一時的な試行: LIBCAMERA_IPU3_TUNING_FILE=/path/to/ov5693.yaml cam -c2 --capture=60
 %YAML 1.1
 ---
 version: 1
 algorithms:
   - Af:
   - Agc:
-      relativeLuminanceTarget: 0.40
+      relativeLuminanceTarget: 0.59
   - Awb:
   - BlackLevelCorrection:
   - ToneMapping:
+      gamma: 2.8
 ...

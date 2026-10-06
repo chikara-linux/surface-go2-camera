@@ -125,6 +125,44 @@ else
 fi
 
 echo
+echo "== 前面カメラの画質（改造した IPU3 IPA とチューニング）=="
+# チューニングの gamma は改造版の IPA でしか効かない。片方だけだと露出だけが
+# 上がって背景が白く飛ぶ。両方揃っているか、Ubuntu の libcamera 更新で改造版が
+# 使われなくなっていないかを見る（2026-10-06）。
+IPADIR=/usr/local/lib/libcamera/ipa
+TUN=/usr/share/libcamera/ipa/ipu3/ov5693.yaml
+LCVER=$(dpkg-query -W -f='${Version}' libcamera0.7 2>/dev/null)
+have_gamma=0; grep -qE '^\s*gamma:' "$TUN" 2>/dev/null && have_gamma=1
+if [ -f "$IPADIR/ipa_ipu3.so" ]; then
+  ok "改造版の IPA がある ($IPADIR/ipa_ipu3.so)"
+  built=$(cat "$IPADIR/BUILT_AGAINST" 2>/dev/null)
+  if [ "$built" = "$LCVER" ]; then
+    ok "改造版は入っている libcamera と同じ版向け ($LCVER)"
+  else
+    ng "libcamera が更新された（改造版: ${built:-不明} / 入っている版: ${LCVER:-不明}）"
+    note "取り決めが変わっていれば改造版は使われず、標準の IPA に戻っている（ガンマ 1.1）"
+    note "再ビルド: ~/開発・検証/camera/libcamera-ipa/build.sh → 導入"
+  fi
+  if grep -qE '^\s*-\s*'"$IPADIR"'\s*$' /etc/libcamera/configuration.yaml 2>/dev/null; then
+    ok "/etc/libcamera/configuration.yaml が改造版を指している"
+  else
+    ng "/etc/libcamera/configuration.yaml が無いか、改造版の場所を指していない"
+  fi
+  # 利用者側の設定ファイルがあると、/etc のものは丸ごと無視される
+  if [ -f "$HOME/.config/libcamera/configuration.yaml" ]; then
+    ng "~/.config/libcamera/configuration.yaml がある（/etc の設定が無視される）"
+  fi
+  [ "$have_gamma" = 1 ] && ok "チューニングに gamma がある" \
+                        || ng "チューニングに gamma が無い（改造版が入っていても効かない）"
+else
+  if [ "$have_gamma" = 1 ]; then
+    ng "チューニングに gamma があるのに改造版の IPA が無い（露出だけ上がり背景が白く飛ぶ）"
+  else
+    note "改造版の IPA は導入していない"
+  fi
+fi
+
+echo
 echo "== 復旧スイッチ（固まったときの保険）=="
 QSDIR="$HOME/.local/share/plasma/quicksettings/org.kde.plasma.quicksetting.lockerrestart"
 if [ -x /usr/local/bin/lockscreen-restart ]; then

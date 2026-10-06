@@ -1,0 +1,19 @@
+# libcamera の全体設定。/etc/libcamera/configuration.yaml に置く。
+#
+# 改造した IPU3 の IPA（ToneMapping がチューニングの gamma を読む）を、
+# 標準の IPA より先に探させる。標準パッケージには一切手を入れない。
+#
+# 改造版は署名が無いので、libcamera は別プロセス（ipu3_ipa_proxy）で動かす。
+# Ubuntu が libcamera を更新して IPA の取り決めが変わった場合、改造版は
+# 選ばれなくなり、自動で標準の IPA に戻る（カメラは動き、ガンマが 1.1 に
+# 戻るだけ）。そのときは check-install.sh が知らせるので再ビルドする。
+#
+# 探索順: ~/.config/libcamera/ → /etc/libcamera/ → /usr/share/libcamera/
+# 最初に見つかった 1 つだけが使われる。環境変数 LIBCAMERA_IPA_MODULE_PATH が
+# あればそちらが優先される。
+---
+version: 1
+configuration:
+  ipa:
+    module_paths:
+      - /usr/local/lib/libcamera/ipa

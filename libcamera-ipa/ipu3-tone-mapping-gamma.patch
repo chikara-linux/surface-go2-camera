@@ -1,0 +1,68 @@
+--- a/src/ipa/ipu3/algorithms/tone_mapping.h
++++ b/src/ipa/ipu3/algorithms/tone_mapping.h
+@@ -18,6 +18,7 @@
+ public:
+ 	ToneMapping();
+ 
++	int init(IPAContext &context, const YamlObject &tuningData) override;
+ 	int configure(IPAContext &context, const IPAConfigInfo &configInfo) override;
+ 	void prepare(IPAContext &context, const uint32_t frame,
+ 		     IPAFrameContext &frameContext, ipu3_uapi_params *params) override;
+@@ -28,6 +29,7 @@
+ 
+ private:
+ 	double gamma_;
++	double defaultGamma_;
+ };
+ 
+ } /* namespace ipa::ipu3::algorithms */
+--- a/src/ipa/ipu3/algorithms/tone_mapping.cpp
++++ b/src/ipa/ipu3/algorithms/tone_mapping.cpp
+@@ -27,11 +27,32 @@
+  */
+ 
+ ToneMapping::ToneMapping()
+-	: gamma_(1.0)
++	: gamma_(1.0), defaultGamma_(1.1)
+ {
+ }
+ 
+ /**
++ * \brief Read the gamma value from the tuning data
++ * \param[in] context The shared IPA context
++ * \param[in] tuningData The YamlObject containing the ToneMapping tuning data
++ *
++ * The key is "gamma", the same one the libipa Gamma helper reads in later
++ * libcamera releases, so a tuning file written for this keeps working there.
++ * Without the key the previous hardcoded value of 1.1 is used.
++ *
++ * \return 0
++ */
++int ToneMapping::init([[maybe_unused]] IPAContext &context,
++		      const YamlObject &tuningData)
++{
++	double gamma = tuningData["gamma"].get<double>(1.1);
++
++	defaultGamma_ = gamma > 0.0 ? gamma : 1.1;
++
++	return 0;
++}
++
++/**
+  * \brief Configure the tone mapping given a configInfo
+  * \param[in] context The shared IPA context
+  * \param[in] configInfo The IPA configuration data
+@@ -90,11 +111,11 @@
+ 			  [[maybe_unused]] ControlList &metadata)
+ {
+ 	/*
+-	 * Hardcode gamma to 1.1 as a default for now.
++	 * Use the gamma from the tuning data (1.1 when not set).
+ 	 *
+ 	 * \todo Expose gamma control setting through the libcamera control API
+ 	 */
+-	gamma_ = 1.1;
++	gamma_ = defaultGamma_;
+ 
+ 	if (context.activeState.toneMapping.gamma == gamma_)
+ 		return;
