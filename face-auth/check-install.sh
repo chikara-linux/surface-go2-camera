@@ -110,6 +110,18 @@ else
 fi
 
 echo
+echo "== 休止状態からの復帰（int3472-tps68470-fix）=="
+# 上流のドライバは休止状態で切れた TPS68470 の設定を書き戻さず、復帰後に
+# 赤外線・背面カメラが -121 で動かなくなる（2026-10-09）。DKMS 版が要る。
+f=$(modinfo -F filename intel_skl_int3472_tps68470 2>/dev/null)
+case "$f" in
+  */updates/dkms/*) ok "TPS68470 のドライバは休止状態の復元つきの版" ;;
+  "")               note "intel_skl_int3472_tps68470 が見つからない" ;;
+  *)                ng "TPS68470 のドライバが上流のまま（休止状態から戻るとカメラが動かない）"
+                    note "直す: ~/開発・検証/camera/tps68470-hibernate/dkms/int3472-tps68470-fix-1.0/README.md" ;;
+esac
+
+echo
 echo "== 前面カメラ（ov5693-fix）=="
 # 向き補正で水平反転を常時有効にしているため、ビニングモードでは映らない。
 # allow_binning パラメータがあれば修正済みのモジュール（2026-10-06）。

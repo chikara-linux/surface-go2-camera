@@ -94,6 +94,10 @@ cp wireplumber/*.conf ~/.config/wireplumber/wireplumber.conf.d/
 
 ## なぜ専用アプリが要るのか
 
+**休止状態（hibernate）から戻ると、赤外線・背面カメラとフォーカス用モーターが
+動かなくなっていた**（電源制御チップ TPS68470 の設定が書き戻されないため）。
+`dkms/int3472-tps68470-fix/` で直してある（2026-10-09）。
+
 **前面カメラの画質は、改造した IPU3 の IPA とチューニングで調整してある**
 （露出 1.47 倍・ガンマ 2.8。`libcamera-ipa/README.md`、2026-10-06）。
 libcamera 0.7.x はガンマを 1.1 に固定しており、顔が暗く沈んでいた。
