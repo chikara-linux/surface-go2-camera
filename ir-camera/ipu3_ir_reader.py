@@ -403,14 +403,25 @@ class IPU3IRReader:
     def release(self):
         self.illuminator_off()
         if self.proc:
+            # v4l2-ctl は SIGTERM ではなく SIGKILL で止める。
+            #
+            # 呼び出し元から SIGTERM の「保留」（シグナルマスク）が引き継がれて
+            # いることがあり、そのとき terminate() は届かない。ロック画面から
+            # 起動された場合がそうで、以前は wait(timeout=3) の時間切れまで待って
+            # から kill していたため、顔の照合が済んでから解除までが毎回 3 秒
+            # 遅れていた（2026-10-10 実測。SIGTERM を保留して再現すると 0.00 秒 →
+            # 3.00 秒）。v4l2-ctl はパイプへ流しているだけで後始末が要らない
+            # （ストリームの停止とバッファの解放はカーネルが閉じるときに行う）ので、
+            # 保留できない SIGKILL で止める。止まり方は、以前の 3 秒後の kill と同じ。
             try:
-                self.proc.terminate()
+                self.proc.kill()
                 self.proc.wait(timeout=3)
             except Exception:
-                try:
-                    self.proc.kill()
-                except Exception:
-                    pass
+                pass
+            try:
+                self.proc.stdout.close()
+            except Exception:
+                pass
             self.proc = None
 
     def set(self, prop, value):
