@@ -1,8 +1,8 @@
 diff --git a/howdy/src/compare.py b/howdy/src/compare.py
-index 929c127..6f26259 100644
+index 929c127..abf5bf9 100644
 --- a/howdy/src/compare.py
 +++ b/howdy/src/compare.py
-@@ -12,7 +12,31 @@ timings = {
+@@ -12,7 +12,44 @@ timings = {
  # Import required modules
  import sys
  import os
@@ -28,13 +28,26 @@ index 929c127..6f26259 100644
 +	_STARTUP_PPID = None
 +_LAUNCHED_BY_PAM = "HOME" not in os.environ
 +
++# どの PAM サービスから呼ばれたか（pam_howdy が HOWDY_PAM_SERVICE で渡す。
++# 2026-10-10 以降）。ロック画面専用の処理（解除直後の二重起動を防ぐガード、
++# 失敗の通知、成功報告の遅延）は、ロック画面のときだけ働かせる。
++#
++# sudo と polkit はセッションが解錠された状態で呼ばれるので、ロック画面の
++# ガード（「解錠済みなら退く」）を通すと必ず弾かれる。また root で動くので
++# /run/user/0 を前提にした印や通知も意味を持たない。
++#
++# 変数が無い（古い pam_howdy）か空なら、従来どおりロック画面として扱う。
++_PAM_SERVICE = os.environ.get("HOWDY_PAM_SERVICE", "")
++_LOCKSCREEN_SERVICES = ("", "kde-fingerprint")
++_FROM_LOCKSCREEN = _LAUNCHED_BY_PAM and _PAM_SERVICE in _LOCKSCREEN_SERVICES
++
  import json
 +import fcntl
 +import glob
  import configparser
  import cv2
  from datetime import timezone, datetime
-@@ -71,6 +95,264 @@ def init_detector(lock):
+@@ -71,6 +108,265 @@ def init_detector(lock):
  	lock.release()
  
  
@@ -142,12 +155,13 @@ index 929c127..6f26259 100644
 +
 +
 +def _parent_is_greeter():
-+	"""PAM（ロック画面）から起動されたか。
++	"""ロック画面（kde-fingerprint）の PAM から起動されたか。
 +
 +	名前は経緯の都合で残しているが、実際に見ているのは環境変数。
 +	親プロセスの生死に左右されない（上のコメント参照）。
++	sudo や polkit から呼ばれたときは False（_FROM_LOCKSCREEN を参照）。
 +	"""
-+	return _LAUNCHED_BY_PAM
++	return _FROM_LOCKSCREEN
 +
 +
 +def _session_locked():
@@ -299,7 +313,7 @@ index 929c127..6f26259 100644
  def make_snapshot(type):
  	"""Generate snapshot after detection"""
  	snapshot.generate(snapframes, [
-@@ -121,6 +403,11 @@ frames = 0
+@@ -121,6 +417,11 @@ frames = 0
  snapframes = []
  # Tracks the best (highest) cosine similarity in the loop
  best_similarity = 0
@@ -311,7 +325,7 @@ index 929c127..6f26259 100644
  # Face detection/recognition instances
  face_detector = None
  face_recognizer = None
-@@ -147,6 +434,11 @@ config.read(paths_factory.config_file_path())
+@@ -147,6 +448,11 @@ config.read(paths_factory.config_file_path())
  timeout = config.getint("video", "timeout", fallback=4)
  dark_threshold = config.getfloat("video", "dark_threshold", fallback=50.0)
  video_certainty = config.getfloat("video", "certainty", fallback=0.40)
@@ -323,7 +337,7 @@ index 929c127..6f26259 100644
  detection_threshold = config.getfloat("video", "detection_threshold", fallback=0.9)
  end_report = config.getboolean("debug", "end_report", fallback=False)
  save_failed = config.getboolean("snapshots", "save_failed", fallback=False)
-@@ -178,6 +470,25 @@ lock = threading.Lock()
+@@ -178,6 +484,25 @@ lock = threading.Lock()
  lock.acquire()
  threading.Thread(target=init_detector, args=(lock,), daemon=True).start()
  
@@ -349,7 +363,7 @@ index 929c127..6f26259 100644
  # Start video capture on the IR camera
  timings["ic"] = time.time()
  
-@@ -225,6 +536,11 @@ while True:
+@@ -225,6 +550,11 @@ while True:
  	# Increment the frame count every loop
  	frames += 1
  
@@ -361,18 +375,22 @@ index 929c127..6f26259 100644
  	# Form a string to let the user know we're real busy
  	ui_subtext = "Scanned " + str(valid_frames - dark_tries) + " frames"
  	if (dark_tries > 1):
-@@ -243,6 +559,10 @@ while True:
+@@ -243,6 +573,14 @@ while True:
  			print(_("Average darkness: {avg}, Threshold: {threshold}").format(avg=str(dark_running_total / max(1, valid_frames)), threshold=str(dark_threshold)))
  			exit(13)
  		else:
-+			if eyes_closed_seen:
-+				notify_eyes_closed()
-+			else:
-+				notify_no_match(best_similarity, video_certainty)
++			# 通知はロック画面のときだけ。sudo は端末に「もう一度」が出るし、
++			# polkit はダイアログが残る。root で動くので利用者のセッションバスにも
++			# 届かない。
++			if _parent_is_greeter():
++				if eyes_closed_seen:
++					notify_eyes_closed()
++				else:
++					notify_no_match(best_similarity, video_certainty)
  			exit(11)
  
  	# Grab a single frame of video
-@@ -333,6 +653,37 @@ while True:
+@@ -333,6 +671,37 @@ while True:
  
  			# Check if similarity exceeds our threshold
  			if similarity >= video_certainty:
@@ -410,7 +428,7 @@ index 929c127..6f26259 100644
  				timings["tt"] = time.time() - timings["st"]
  				timings["fl"] = time.time() - timings["fr"]
  
-@@ -395,6 +746,13 @@ while True:
+@@ -395,6 +764,13 @@ while True:
  					})
  
  				# End peacefully

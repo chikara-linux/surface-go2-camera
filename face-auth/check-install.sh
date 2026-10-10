@@ -61,6 +61,43 @@ else
 fi
 
 echo
+echo "== sudo / polkit の顔認証（2026-10-10）=="
+# パスワード欄を空のまま Enter → 顔認証。パスワードを先に評価する。
+ETC="$REPO/surface-go2-camera/face-auth/etc"
+if strings /usr/lib/x86_64-linux-gnu/security/pam_howdy.so 2>/dev/null | grep -q 'HOWDY_PAM_SERVICE='; then
+  ok "pam_howdy.so が PAM サービス名を渡す版"
+else
+  note "pam_howdy.so は PAM サービス名を渡さない版（sudo/polkit の顔認証は未導入）"
+fi
+for svc in sudo sudo-i polkit-1; do
+  if [ ! -f "/etc/pam.d/$svc" ] || ! grep -q 'pam_howdy' "/etc/pam.d/$svc" 2>/dev/null; then
+    note "/etc/pam.d/$svc に顔認証は入っていない"
+    continue
+  fi
+  if diff -q "$ETC/pam.d-$svc" "/etc/pam.d/$svc" >/dev/null 2>&1; then
+    ok "/etc/pam.d/$svc がリポジトリと一致"
+  else
+    ng "/etc/pam.d/$svc がリポジトリと違う（パッケージ更新で conffile が置き換わった可能性）"
+  fi
+  # common-auth を展開しているので、pam-auth-update で元が変わったら追従が要る
+  # 制御欄（[success=N ...] や requisite）は意図して変えているので比べない。
+  # 比べるのはモジュールと引数の並び。
+  a=$(grep -E '^auth' /etc/pam.d/common-auth | grep -v pam_howdy | sed -E 's/^auth[[:space:]]+(\[[^]]*\]|[a-z]+)[[:space:]]+//; s/[[:space:]]+/ /g; s/ $//')
+  b=$(grep -E '^auth' "/etc/pam.d/$svc" | grep -v pam_howdy | sed -E 's/^auth[[:space:]]+(\[[^]]*\]|[a-z]+)[[:space:]]+//; s/[[:space:]]+/ /g; s/ $//')
+  [ "$a" = "$b" ] || ng "/etc/pam.d/$svc が展開元の common-auth と食い違っている（追従が要る）"
+done
+if grep -q 'pam_howdy' /etc/pam.d/polkit-1 2>/dev/null; then
+  DI=/etc/systemd/system/polkit-agent-helper@.service.d/howdy.conf
+  if diff -q "$ETC/polkit-agent-helper-howdy.conf" "$DI" >/dev/null 2>&1; then
+    ok "polkit の helper のサンドボックス緩和が入っている"
+  else
+    ng "polkit に顔認証があるのに、helper のサンドボックス緩和が無い（カメラを開けない）"
+  fi
+  led=$(readlink -f /sys/class/leds/tps68470::ir_illuminator 2>/dev/null)
+  grep -qF "$led" "$DI" 2>/dev/null || ng "緩和の照明のパスが実体（$led）と違う"
+fi
+
+echo
 echo "== 設定 =="
 if [ -f "$SRC/config.ini" ]; then
   if diff -q "$SRC/config.ini" /etc/howdy/config.ini >/dev/null 2>&1; then

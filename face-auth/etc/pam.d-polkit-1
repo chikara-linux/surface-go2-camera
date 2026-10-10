@@ -1,0 +1,34 @@
+#%PAM-1.0
+
+# 顔認証つきの認証（2026-10-10）。common-auth を展開し、間に pam_howdy を挟んだもの。
+#
+#   1. まずパスワード（pam_unix）。正しければ顔認証は使わずに通る
+#   2. パスワードが違う・空なら顔認証（pam_howdy）
+#   3. どちらも駄目なら拒否
+#
+# **パスワード欄を空のまま Enter を押すと顔認証になる。** 何も押さなければ
+# カメラは動かない。顔認証を自動で走らせないのは、
+#   - 背後で動くプログラムが sudo を呼んでも、利用者の操作なしには通らないように
+#   - polkit のダイアログで内容を読む前に通ってしまわないように
+#   - パスワードで入る人に顔認証の待ち時間（最長 5 秒）をかけないように
+# するため。
+#
+# **顔認証に進むのは、パスワードが「違う／空」と確定したとき（auth_err）だけ。**
+# 問い合わせ自体ができなかった（sudo -n、polkit のダイアログでキャンセル、
+# 端末が無い等）ときは default=die でその場で拒否する。これが無いと、sudo -n を
+# 呼ぶスクリプトや、キャンセルされたダイアログが、何も押さずに顔で通ってしまう。
+#
+# パスワードを先に評価するので、pam_howdy が壊れても（読み込めない・カメラが
+# 無い）パスワードの経路には影響しない。pam_howdy の失敗は次の行（拒否）へ。
+#
+# 元は /etc/pam.d/common-auth（pam-auth-update が管理）。そちらの内容が変わったら
+# ここも合わせる。check-install.sh が差分を知らせる。
+auth	[success=2 auth_err=ignore default=die]	pam_unix.so nullok
+auth	[success=1 default=ignore]	pam_howdy.so
+auth	requisite			pam_deny.so
+auth	required			pam_permit.so
+auth	optional			pam_cap.so
+@include common-account
+@include common-password
+session       required   pam_env.so readenv=1 user_readenv=0
+@include common-session-noninteractive
